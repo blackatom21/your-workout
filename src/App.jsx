@@ -43,10 +43,35 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// ── JSON parsing helper ──────────────────────────────────────────────────────
-function parseExercises(text) {
+// ── JSON parsing helpers ─────────────────────────────────────────────────────
+// With responseMimeType: "application/json" the proxy returns clean JSON,
+// but these stay tolerant of markdown fences or stray surrounding text.
+function parseArray(text) {
+  if (!text) return null;
+  // Try direct parse first (the expected case)
+  try {
+    const v = JSON.parse(text.trim());
+    if (Array.isArray(v)) return v;
+  } catch {}
+  // Fall back to extracting a fenced or bare array
   try {
     const m = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/(\[[\s\S]*\])/);
+    if (m) {
+      const v = JSON.parse(m[1]);
+      if (Array.isArray(v)) return v;
+    }
+  } catch {}
+  return null;
+}
+
+function parseObject(text) {
+  if (!text) return null;
+  try {
+    const v = JSON.parse(text.trim());
+    if (v && typeof v === "object" && !Array.isArray(v)) return v;
+  } catch {}
+  try {
+    const m = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/(\{[\s\S]*\})/);
     if (m) return JSON.parse(m[1]);
   } catch {}
   return null;
@@ -108,19 +133,18 @@ Make exercises functional, practical, and well-balanced for this exact equipment
 
     try {
       const text = await callAI(prompt);
-      let arr = parseExercises(text);
-      if (!arr) { try { arr = JSON.parse(text.trim()); } catch {} }
-      if (Array.isArray(arr)) {
+      const arr = parseArray(text);
+      if (Array.isArray(arr) && arr.length > 0) {
         const withIds = arr.map((e, i) => ({ ...e, id: `ex-${Date.now()}-${i}` }));
         setExercises(withIds);
         setLogs({});
         setCompletedSets({});
         setScreen("routine");
       } else {
-        setError("Couldn't parse exercises — try refreshing.");
+        setError("Couldn't parse exercises — tap Generate to try again.");
       }
     } catch (e) {
-      setError("Something went wrong: " + e.message);
+      setError(e.message || "Something went wrong.");
     }
     setLoading(false);
   }, [focus, callAI]);
@@ -142,12 +166,8 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
 
     try {
       const text = await callAI(prompt);
-      let obj;
-      try { obj = JSON.parse(text.trim()); } catch {
-        const m = text.match(/\{[\s\S]*\}/);
-        if (m) obj = JSON.parse(m[0]);
-      }
-      if (obj) {
+      const obj = parseObject(text);
+      if (obj && obj.name) {
         const oldId = exercises[index]?.id;
         const updated = [...exercises];
         updated[index] = { ...obj, id: `ex-${Date.now()}` };
@@ -159,10 +179,10 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
           return n;
         });
       } else {
-        setError("Couldn't parse replacement — try again.");
+        setError("Couldn't parse replacement — tap swap to try again.");
       }
     } catch (e) {
-      setError("Swap failed: " + e.message);
+      setError(e.message || "Swap failed.");
     }
     setSwappingIndex(null);
   }, [exercises, focus, callAI]);
