@@ -26,7 +26,12 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          maxOutputTokens: 1200,
+          // Disable "thinking" so it doesn't eat the output token budget.
+          thinkingConfig: { thinkingBudget: 0 },
+          // Force clean JSON output (no markdown fences).
+          responseMimeType: 'application/json',
+          // Generous headroom in case thinking sneaks in anyway.
+          maxOutputTokens: 2048,
           temperature: 0.9
         }
       })
@@ -39,13 +44,25 @@ export default async function handler(req, res) {
       return res.status(response.status).json({ error: msg })
     }
 
-    // Extract text from Gemini's response shape
-    const text = data?.candidates?.[0]?.content?.parts
-      ?.map(p => p.text || '')
-      .join('') || ''
+    const candidate = data?.candidates?.[0]
+    const finishReason = candidate?.finishReason
+    const text = candidate?.content?.parts?.map(p => p.text || '').join('') || ''
 
+    // Surface the real reason if the model returned nothing usable.
     if (!text) {
-      return res.status(502).json({ error: 'Empty response from Gemini' })
+      if (finishReason === 'MAX_TOKENS') {
+        return res.status(502).json({
+          error: 'Model hit the token limit before producing output. Try again.'
+        })
+      }
+      if (finishReason === 'SAFETY') {
+        return res.status(502).json({
+          error: 'Response blocked by safety filter. Try a different focus.'
+        })
+      }
+      return res.status(502).json({
+        error: `Empty response from Gemini (finishReason: ${finishReason || 'unknown'})`
+      })
     }
 
     return res.status(200).json({ text })
