@@ -26,6 +26,7 @@ const LS_KEYS = {
   focus: "yw_focus",
   screen: "yw_screen",
   lastDate: "yw_lastDate",
+  history: "yw_history",
 };
 
 function lsGet(key, fallback) {
@@ -41,6 +42,15 @@ function lsSet(key, value) {
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function formatDate(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, {
+      weekday: "short", month: "short", day: "numeric",
+    }) + " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  } catch { return iso; }
 }
 
 // ── JSON parsing helpers ─────────────────────────────────────────────────────
@@ -84,6 +94,7 @@ export default function App() {
   const [exercises, setExercises]       = useState(() => lsGet(LS_KEYS.exercises, []));
   const [logs, setLogs]                 = useState(() => lsGet(LS_KEYS.logs, {}));
   const [completedSets, setCompletedSets] = useState(() => lsGet(LS_KEYS.completedSets, {}));
+  const [history, setHistory]           = useState(() => lsGet(LS_KEYS.history, []));
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState(null);
   const [swappingIndex, setSwappingIndex] = useState(null);
@@ -94,6 +105,7 @@ export default function App() {
   useEffect(() => { lsSet(LS_KEYS.exercises, exercises); }, [exercises]);
   useEffect(() => { lsSet(LS_KEYS.logs, logs); }, [logs]);
   useEffect(() => { lsSet(LS_KEYS.completedSets, completedSets); }, [completedSets]);
+  useEffect(() => { lsSet(LS_KEYS.history, history); }, [history]);
 
   // Auto-reset logs if it's a new day (keep exercises, clear progress)
   useEffect(() => {
@@ -214,17 +226,73 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
   }, 0);
   const progress = totalSets > 0 ? Math.round((totalSetsCompleted / totalSets) * 100) : 0;
 
+  // ── Save the finished workout as a record ─────────────────────────────────
+  const completeWorkout = useCallback(() => {
+    if (exercises.length === 0) return;
+    const record = {
+      id: `rec-${Date.now()}`,
+      date: new Date().toISOString(),
+      focus,
+      totalSets,
+      completedSets: totalSetsCompleted,
+      exercises: exercises.map(ex => ({
+        name: ex.name,
+        muscles: ex.muscles,
+        reps: ex.reps,
+        sets: ex.sets,
+        weight_note: ex.weight_note,
+        description: ex.description,
+        log: getLog(ex.id, ex.sets).slice(0, ex.sets).map((entry, i) => ({
+          set: i + 1,
+          weight: entry.weight ?? "",
+          reps: entry.reps ?? "",
+          done: !!completedSets[`${ex.id}-${i}`],
+        })),
+      })),
+    };
+    setHistory(prev => [record, ...prev]);
+    // Clear the active session and jump to history
+    setLogs({});
+    setCompletedSets({});
+    setScreen("history");
+  }, [exercises, focus, totalSets, totalSetsCompleted, completedSets, logs]);
+
+  // ── Repeat a saved workout as a fresh active routine ──────────────────────
+  const repeatWorkout = useCallback((record) => {
+    const fresh = record.exercises.map((ex, i) => ({
+      id: `ex-${Date.now()}-${i}`,
+      name: ex.name,
+      muscles: ex.muscles,
+      reps: ex.reps,
+      sets: ex.sets,
+      weight_note: ex.weight_note,
+      description: ex.description,
+    }));
+    setFocus(record.focus);
+    setExercises(fresh);
+    setLogs({});
+    setCompletedSets({});
+    setScreen("routine");
+  }, []);
+
+  const deleteRecord = useCallback((id) => {
+    setHistory(prev => prev.filter(r => r.id !== id));
+  }, []);
+
   return (
     <div style={s.app}>
-      {screen === "setup" ? (
+      {screen === "setup" && (
         <SetupScreen
           focus={focus} setFocus={setFocus}
           onGenerate={generateRoutine}
           loading={loading} error={error}
           hasExistingRoutine={exercises.length > 0}
           onResume={() => setScreen("routine")}
+          historyCount={history.length}
+          onViewHistory={() => setScreen("history")}
         />
-      ) : (
+      )}
+      {screen === "routine" && (
         <RoutineScreen
           exercises={exercises} loading={loading} swappingIndex={swappingIndex}
           onSwap={handleSwap} onRefresh={generateRoutine} onBack={() => setScreen("setup")}
@@ -232,6 +300,15 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
           completedSets={completedSets} toggleSetDone={toggleSetDone}
           progress={progress} totalSetsCompleted={totalSetsCompleted}
           totalSets={totalSets} focus={focus} error={error}
+          onComplete={completeWorkout}
+        />
+      )}
+      {screen === "history" && (
+        <HistoryScreen
+          history={history}
+          onBack={() => setScreen("setup")}
+          onRepeat={repeatWorkout}
+          onDelete={deleteRecord}
         />
       )}
     </div>
@@ -239,12 +316,20 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
 }
 
 // ── Setup Screen ─────────────────────────────────────────────────────────────
-function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingRoutine, onResume }) {
+function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingRoutine, onResume, historyCount, onViewHistory }) {
   return (
     <div style={s.container}>
-      <div style={s.header}>
-        <h1 style={s.title}>YourWorkout</h1>
-        <p style={s.subtitle}>Daily Routines Built Around Your Gear</p>
+      <div style={s.headerRow}>
+        <div style={{ flex: 1 }} />
+        <div style={s.header}>
+          <h1 style={s.title}>YourWorkout</h1>
+          <p style={s.subtitle}>Daily Routines Built Around Your Gear</p>
+        </div>
+        <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={onViewHistory} style={s.historyIconBtn} title="Workout history">
+            🗂️{historyCount > 0 && <span style={s.historyCount}>{historyCount}</span>}
+          </button>
+        </div>
       </div>
 
       <section style={s.section}>
@@ -306,6 +391,12 @@ function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingR
         </button>
       )}
 
+      {historyCount > 0 && (
+        <button onClick={onViewHistory} style={s.ghostBtn}>
+          View Past Workouts ({historyCount})
+        </button>
+      )}
+
       <p style={s.hint}>{focus} focus · exercises tailored to your rack & dumbbells</p>
     </div>
   );
@@ -327,7 +418,7 @@ function GearRow({ icon, name, detail }) {
 function RoutineScreen({
   exercises, loading, swappingIndex, onSwap, onRefresh, onBack,
   logs, getLog, updateLog, completedSets, toggleSetDone,
-  progress, totalSetsCompleted, totalSets, focus, error,
+  progress, totalSetsCompleted, totalSets, focus, error, onComplete,
 }) {
   const [expandedId, setExpandedId] = useState(null);
 
@@ -427,7 +518,108 @@ function RoutineScreen({
       )}
 
       {progress === 100 && (
-        <div style={s.doneMessage}>🏆 Workout complete! Great work today.</div>
+        <div style={s.doneMessage}>🏆 All sets done! Save it below.</div>
+      )}
+
+      {exercises.length > 0 && !loading && (
+        <button onClick={onComplete} style={s.completeBtn}>
+          ✓ Complete Workout
+        </button>
+      )}
+      {exercises.length > 0 && !loading && (
+        <p style={s.completeHint}>
+          Saves a record with your logged weights and reps
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── History Screen ────────────────────────────────────────────────────────────
+function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  return (
+    <div style={s.container}>
+      <div style={s.routineHeader}>
+        <button onClick={onBack} style={s.backBtn}>← Back</button>
+        <div style={{ textAlign: "center" }}>
+          <h1 style={s.routineTitle}>Past Workouts</h1>
+          <span style={s.focusTag}>{history.length} saved</span>
+        </div>
+        <div style={{ minWidth: 60 }} />
+      </div>
+
+      {history.length === 0 ? (
+        <div style={s.emptyState}>
+          <div style={s.emptyIcon}>🗂️</div>
+          <p style={s.emptyTitle}>No saved workouts yet</p>
+          <p style={s.emptyText}>
+            Finish a routine and tap "Complete Workout" to save it here.
+          </p>
+        </div>
+      ) : (
+        history.map(rec => {
+          const isExpanded = expandedId === rec.id;
+          const pct = rec.totalSets > 0 ? Math.round((rec.completedSets / rec.totalSets) * 100) : 0;
+          return (
+            <div key={rec.id} style={s.card}>
+              <div style={s.cardHeader} onClick={() => setExpandedId(isExpanded ? null : rec.id)}>
+                <div style={s.cardLeft}>
+                  <div>
+                    <div style={s.cardName}>{rec.focus}</div>
+                    <div style={s.cardMeta}>
+                      {formatDate(rec.date)} · {rec.exercises.length} exercises · {rec.completedSets}/{rec.totalSets} sets ({pct}%)
+                    </div>
+                  </div>
+                </div>
+                <span style={s.chevron}>{isExpanded ? "▲" : "▼"}</span>
+              </div>
+
+              {isExpanded && (
+                <div style={s.cardBody}>
+                  {rec.exercises.map((ex, i) => (
+                    <div key={i} style={s.recExercise}>
+                      <div style={s.recExName}>{ex.name}</div>
+                      <div style={s.recExMeta}>{ex.muscles}</div>
+                      <div style={s.recSetList}>
+                        {ex.log.map((entry, j) => (
+                          <span key={j} style={{
+                            ...s.recSetChip,
+                            ...(entry.done ? s.recSetChipDone : {}),
+                          }}>
+                            {entry.done ? "✓ " : ""}
+                            {entry.weight ? `${entry.weight}lb` : "—"} × {entry.reps || "—"}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  <div style={s.recActions}>
+                    <button onClick={() => onRepeat(rec)} style={s.repeatBtn}>
+                      ↻ Repeat This Workout
+                    </button>
+                    {confirmDelete === rec.id ? (
+                      <div style={s.confirmRow}>
+                        <span style={s.confirmText}>Delete?</span>
+                        <button onClick={() => { onDelete(rec.id); setConfirmDelete(null); }}
+                          style={s.confirmYes}>Yes</button>
+                        <button onClick={() => setConfirmDelete(null)}
+                          style={s.confirmNo}>No</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setConfirmDelete(rec.id)} style={s.deleteBtn}>
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })
       )}
     </div>
   );
@@ -447,6 +639,16 @@ const s = {
     padding: "32px 20px 100px",
   },
   header: { textAlign: "center", marginBottom: 40 },
+  headerRow: { display: "flex", alignItems: "flex-start", marginBottom: 40 },
+  historyIconBtn: {
+    position: "relative", background: "#1a1a1a", border: "1px solid #2a2a2a",
+    borderRadius: 10, fontSize: 18, padding: "8px 12px", cursor: "pointer",
+  },
+  historyCount: {
+    position: "absolute", top: -6, right: -6, background: "#a3e635", color: "#0a0a0a",
+    fontSize: 10, fontWeight: 800, borderRadius: 10, minWidth: 18, height: 18,
+    display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 4px",
+  },
   title: {
     fontSize: 38,
     fontWeight: 800,
@@ -499,6 +701,11 @@ const s = {
     fontWeight: 600, cursor: "pointer", marginBottom: 12,
   },
   hint: { textAlign: "center", color: "#555", fontSize: 13 },
+  ghostBtn: {
+    display: "block", width: "100%", padding: "12px", background: "transparent",
+    color: "#888", border: "1px solid #2a2a2a", borderRadius: 12, fontSize: 14,
+    fontWeight: 600, cursor: "pointer", marginBottom: 12,
+  },
   errorBox: {
     background: "#2a0a0a", border: "1px solid #6b1a1a", color: "#f87171",
     padding: "12px 16px", borderRadius: 8, fontSize: 14, marginBottom: 16,
@@ -573,8 +780,51 @@ const s = {
     fontSize: 14, padding: "5px 10px", width: 36, textAlign: "center",
   },
   doneMessage: {
-    textAlign: "center", padding: "24px", background: "#0d2b1a",
+    textAlign: "center", padding: "20px", background: "#0d2b1a",
     border: "1px solid #22c55e", borderRadius: 14, color: "#22c55e",
-    fontWeight: 700, fontSize: 18, marginTop: 16,
+    fontWeight: 700, fontSize: 16, marginTop: 16, marginBottom: 16,
+  },
+  completeBtn: {
+    display: "block", width: "100%", padding: "16px", background: "#22c55e",
+    color: "#0a0a0a", border: "none", borderRadius: 12, fontSize: 16,
+    fontWeight: 800, cursor: "pointer", marginTop: 8,
+  },
+  completeHint: { textAlign: "center", color: "#555", fontSize: 12, marginTop: 8 },
+
+  // History
+  emptyState: { textAlign: "center", padding: "60px 20px" },
+  emptyIcon: { fontSize: 48, marginBottom: 16 },
+  emptyTitle: { fontSize: 17, fontWeight: 700, color: "#ccc", marginBottom: 8 },
+  emptyText: { fontSize: 14, color: "#555", lineHeight: 1.5 },
+  recExercise: { padding: "12px 0", borderBottom: "1px solid #1a1a1a" },
+  recExName: { fontWeight: 600, fontSize: 14, color: "#f0f0f0" },
+  recExMeta: { fontSize: 12, color: "#555", marginTop: 2, marginBottom: 8 },
+  recSetList: { display: "flex", flexWrap: "wrap", gap: 6 },
+  recSetChip: {
+    fontSize: 11, fontWeight: 600, background: "#1a1a1a", border: "1px solid #2a2a2a",
+    color: "#888", padding: "3px 8px", borderRadius: 6,
+  },
+  recSetChipDone: { background: "#0d2b1a", border: "1px solid #1d5237", color: "#a3e635" },
+  recActions: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 10, marginTop: 16,
+  },
+  repeatBtn: {
+    flex: 1, padding: "12px", background: "#a3e635", color: "#0a0a0a",
+    border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: "pointer",
+  },
+  deleteBtn: {
+    background: "none", border: "none", color: "#666",
+    fontSize: 13, cursor: "pointer", padding: "8px",
+  },
+  confirmRow: { display: "flex", alignItems: "center", gap: 8 },
+  confirmText: { fontSize: 13, color: "#888" },
+  confirmYes: {
+    background: "#6b1a1a", border: "none", color: "#f87171",
+    fontSize: 13, fontWeight: 700, cursor: "pointer", padding: "6px 12px", borderRadius: 6,
+  },
+  confirmNo: {
+    background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888",
+    fontSize: 13, cursor: "pointer", padding: "6px 12px", borderRadius: 6,
   },
 };
