@@ -5,24 +5,32 @@ const EQUIPMENT_DESCRIPTION = `
 - Bowflex SelectTech adjustable dumbbells (adjustable weight, single pair)
 - Adjustable bench (can be set flat, incline, or decline)
 - Treadmill (good for warm-up cardio and cool-down walking)
-- Major Fitness F22 power rack, which includes ALL of the following built-in:
-    • Standard Olympic barbell (45 lbs)
-    • Multi-grip pull-up bar with wide, neutral, and close-grip handle options
-    • Dual cable pulley system (plate-loaded, 2:1 ratio) with lat pulldown bar, straight bar, and cable D handles
-    • Rack-mounted dip bars (two grip widths)
-    • 360° landmine attachment
+- Major Fitness F22 power rack, which includes ALL of the following built-in, with these specific cable attachments — USE THEM for variety:
+    • Standard Olympic barbell (35 lbs)
+    • Multi-grip pull-up bar (wide, neutral, and close-grip handles) — pull-ups, chin-ups
+    • Dual cable pulley system (2:1 ratio, so the resistance you FEEL is about half the weight loaded) with these included attachments:
+        – Lat pulldown bar → lat pulldowns, straight-arm pulldowns
+        – Straight bar → cable curls, triceps pushdowns, cable rows, upright rows
+        – Stirrup / D handles (pair) → single-arm cable rows, cable flyes, face pulls, lateral raises
+        – T-bar / landmine row handle → T-bar rows
+    • 360° landmine attachment → landmine press, landmine squat-to-press, rotations, RDLs
+    • Rack-mounted dip bars (two grip widths) → dips, inverted rows
+    • Low row footplate → seated cable rows
     • Band pegs (top and bottom)
 - Available plates for both barbell and cable system: two 35 lb plates, two 15 lb plates, two 10 lb plates
-- Barbell weighs 45 lbs (standard Olympic bar)
-- Possible barbell loading combinations (per side): 35, 35+10, 35+15, 35+15+10, 10, 15, 15+10
+- Barbell weighs 35 lbs (lighter than a standard Olympic bar)
+- Achievable barbell totals (35 lb bar + plates): 35, 55, 65, 85, 105, 125, 135, 155 lbs
 `.trim();
 
 const FOCUS_OPTIONS = ["Full Body", "Upper Body", "Lower Body", "Core", "Push", "Pull", "Legs"];
 
 // ── Progressive Overload Engine ──────────────────────────────────────────────
-// Achievable BARBELL totals from a 45 lb bar + plates (2×35, 2×15, 2×10).
-// Per-side combos from {35,15,10}: 0,10,15,25,35,45,50,60 → totals below.
-const BARBELL_LADDER = [45, 65, 75, 95, 115, 135, 145, 165];
+// The user's barbell weighs 35 lbs (not the standard 45). All barbell math
+// derives from this so the achievable loads are correct.
+const BAR_WEIGHT = 35;
+// Achievable BARBELL totals from a 35 lb bar + plates (2×35, 2×15, 2×10).
+// Per-side combos from {35,15,10}: 0,10,15,25,35,45,50,60 → ×2 + 35 bar = below.
+const BARBELL_LADDER = [35, 55, 65, 85, 105, 125, 135, 155];
 
 // Bowflex SelectTech DUMBBELL increments (per dumbbell), default = 552 model.
 // If you own the 1090, swap to: [10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90]
@@ -64,15 +72,15 @@ function prevWeight(ladder, current) {
   return prev;
 }
 
-// Human-readable barbell plate breakdown, e.g. 115 → "45 bar + 35/side".
+// Human-readable barbell plate breakdown, e.g. 105 → "35 bar + 35/side".
 function barbellPlateLabel(total) {
-  const perSide = (total - 45) / 2;
-  if (perSide <= 0) return "45 lb bar (empty)";
+  const perSide = (total - BAR_WEIGHT) / 2;
+  if (perSide <= 0) return `${BAR_WEIGHT} lb bar (empty)`;
   const plates = [35, 15, 10];
   const used = [];
   let rem = perSide;
   for (const p of plates) { if (rem >= p) { used.push(p); rem -= p; } }
-  return `45 bar + ${used.join("+")}/side`;
+  return `${BAR_WEIGHT} bar + ${used.join("+")}/side`;
 }
 
 function weightLabel(equipment, weight) {
@@ -80,7 +88,8 @@ function weightLabel(equipment, weight) {
   const eq = (equipment || "").toLowerCase();
   if (eq === "barbell") return `${weight} lbs · ${barbellPlateLabel(weight)}`;
   if (eq === "dumbbell") return `${weight} lbs each dumbbell`;
-  if (eq === "cable") return `${weight} lbs on the stack`;
+  // F22 cables are 2:1, so felt resistance ≈ half the plate weight loaded.
+  if (eq === "cable") return `${weight} lbs felt (load ~${weight * 2} lbs on the cable)`;
   return `${weight} lbs`;
 }
 
@@ -414,6 +423,7 @@ TRAINING PHILOSOPHY — every routine must reflect ALL of these together:
 - Functional strength: compound, real-world movement patterns (push, pull, hinge, squat, carry, rotate), progressed over time.
 - Mobility & flexibility: dynamic joint mobility in the warm-up and meaningful long-hold static stretching in the cool-down; favor full-range main exercises.
 - Cardiovascular endurance: treadmill in the warm-up and cool-down, plus at least one conditioning / higher-rep element among the main exercises when it fits the focus.
+- Equipment variety: make real use of the F22's cable attachments across sessions — lat pulldown bar, straight bar, D/stirrup handles, T-bar/landmine handle — and the landmine and dip bars, not just the barbell and dumbbells. Pick the attachment that best fits each movement.
 
 PROGRESSION RULES:
 - Prefer reusing tracked lifts from the PROGRESSION LEDGER that fit today's focus, using their EXACT names, so the app can apply progressive overload. Keep their rep ranges stable session to session.
@@ -736,7 +746,7 @@ function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingR
             <span style={s.gearIcon}>🔩</span>
             <div>
               <div style={s.gearName}>Major Fitness F22 Power Rack</div>
-              <div style={s.gearDetail}>45 lb Olympic barbell</div>
+              <div style={s.gearDetail}>35 lb Olympic barbell</div>
               <div style={s.featureRow}>
                 {["Multi-grip pull-up bar","Dual cable system","Dip bars","Landmine"].map(f => (
                   <span key={f} style={s.featureBadge}>{f}</span>
