@@ -284,18 +284,46 @@ function rampUpSets(equipment, workingWeight) {
 }
 
 // Profile context line for the AI (imperial). Empty string if nothing set.
+// Estimated max heart rate: measured value if provided, else Tanaka (208 − 0.7×age).
+function estimatedMaxHr(profile) {
+  if (profile?.maxHrKnown) {
+    const m = Number(profile.maxHrKnown);
+    if (!isNaN(m) && m > 0) return Math.round(m);
+  }
+  if (profile?.age) {
+    const a = Number(profile.age);
+    if (!isNaN(a) && a > 0) return Math.round(208 - 0.7 * a);
+  }
+  return null;
+}
+
+// Heart-rate training zones (BPM ranges) derived from max HR.
+function hrZones(maxHr) {
+  if (!maxHr) return null;
+  const z = (lo, hi) => `${Math.round(maxHr * lo)}–${Math.round(maxHr * hi)} bpm`;
+  return {
+    max: maxHr,
+    vo2: z(0.85, 0.95),        // hard VO2-max work intervals
+    threshold: z(0.80, 0.90),  // tempo / threshold
+    easy: z(0.60, 0.70),       // warm-up, recovery, cool-down
+  };
+}
+
 function profileLine(profile) {
   if (!profile) return "";
   const parts = [];
   if (profile.gender) parts.push(`Gender: ${profile.gender}`);
+  if (profile.age) parts.push(`Age: ${profile.age}`);
   if (profile.heightFt || profile.heightIn) {
     const ft = profile.heightFt || 0;
     const inch = profile.heightIn || 0;
     parts.push(`Height: ${ft}'${inch}"`);
   }
   if (profile.weightLbs) parts.push(`Weight: ${profile.weightLbs} lbs`);
+  const mhr = estimatedMaxHr(profile);
+  if (mhr) parts.push(`Estimated max HR: ${mhr} bpm (${profile.maxHrKnown ? "measured" : "Tanaka formula"})`);
   if (parts.length === 0) return "";
-  return `\nUSER PROFILE (use to tailor starting loads for NEW exercises, rep ranges, and conditioning intensity — but the user's LOGGED performance always takes precedence over profile estimates): ${parts.join(", ")}.\n`;
+  return `\nUSER PROFILE (use to tailor starting loads for NEW exercises, rep ranges, conditioning intensity, recovery, progression aggressiveness, and mobility emphasis — but the user's LOGGED performance always takes precedence over profile estimates): ${parts.join(", ")}.\n`;
 }
 
 // ── localStorage helpers ─────────────────────────────────────────────────────
@@ -491,14 +519,19 @@ function buildConditioningPrompt(lastConditioning, profile) {
       .join("; ");
     progressNote = `\nLAST CONDITIONING SESSION (progress slightly from this — add a round, extend work intervals, or increase pace/incline): ${summary}\n`;
   }
+  const mhr = estimatedMaxHr(profile);
+  const z = hrZones(mhr);
+  const hrLine = z
+    ? `\nThe user's max HR is ${mhr} bpm. Express every work/rest interval intensity with BOTH an RPE and a target HEART-RATE RANGE in bpm. Reference zones: VO2/hard work ${z.vo2}, threshold ${z.threshold}, easy/recovery ${z.easy}.\n`
+    : "";
   return `You are a certified conditioning coach. Build today's dedicated CARDIOVASCULAR / VO2-MAX session using ONLY this equipment:
 ${EQUIPMENT_DESCRIPTION}
-${profileLine(profile)}
+${profileLine(profile)}${hrLine}
 This is an ENDURANCE day, not a strength day. The centerpiece is structured cardiovascular work to build VO2 max and aerobic capacity, primarily on the treadmill, optionally mixed with light functional circuit movements for a metabolic effect. Do NOT program heavy strength lifting today.
 ${progressNote}
 PRINCIPLES:
 - Include true high-intensity work that pushes VO2 max (e.g. 4×4 min @ RPE 8-9 / ~85-95% max HR with active recovery), OR a tempo/threshold block, OR an interval ladder — pick one well-structured format.
-- Give clear intensity targets (RPE and approximate % max heart rate) and explicit work/rest timing.
+- Give clear intensity targets (RPE${z ? " AND target bpm range" : " and approximate % max heart rate"}) and explicit work/rest timing.
 - Keep it time-efficient and appropriate for someone who also strength-trains on other days.
 
 The session MUST have: warm-up (gradual treadmill build + dynamic mobility), 1-3 conditioning blocks, and cool-down (easy treadmill walk + static stretching). Estimate total minutes.
@@ -508,7 +541,7 @@ Respond ONLY with a JSON object (no markdown) in EXACTLY this shape:
   "estimated_minutes": 35,
   "warmup": {"title":"Warm-Up & Aerobic Prime","duration":"6 min","activities":["5 min treadmill easy-to-moderate build","Leg swings, 10 each side","High knees, 30 sec"]},
   "conditioning": [
-    {"name":"Treadmill VO2 Intervals (4×4)","format":"intervals","rounds":4,"work":"4 min @ RPE 8-9 (~90% max HR)","rest":"3 min easy walk/jog","description":"Hard enough that talking is difficult during work intervals."}
+    {"name":"Treadmill VO2 Intervals (4×4)","format":"intervals","rounds":4,"work":"4 min @ RPE 8-9${z ? `, ${z.vo2}` : " (~90% max HR)"}","rest":"3 min easy walk/jog${z ? `, ${z.easy}` : ""}","description":"Hard enough that talking is difficult during work intervals."}
   ],
   "cooldown": {"title":"Cool-Down & Static Stretching","duration":"6 min","activities":["3-5 min treadmill easy walk","Hamstring stretch, 30 sec each","Calf stretch, 30 sec each"]}
 }`;
@@ -900,6 +933,7 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
           routineMeta={routineMeta}
           sectionChecks={sectionChecks} toggleSectionCheck={toggleSectionCheck}
           onRemove={removeExercise}
+          profile={profile}
         />
       )}
       {screen === "history" && (
@@ -928,10 +962,11 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
   const isConditioning = decision.type === "Conditioning";
 
   const setField = (field, value) => setProfile({ ...profile, [field]: value });
-  const hasProfile = profile && (profile.gender || profile.weightLbs || profile.heightFt || profile.heightIn);
+  const hasProfile = profile && (profile.gender || profile.weightLbs || profile.heightFt || profile.heightIn || profile.age);
   const profileSummary = hasProfile
-    ? [profile.gender, (profile.heightFt || profile.heightIn) ? `${profile.heightFt || 0}'${profile.heightIn || 0}"` : null, profile.weightLbs ? `${profile.weightLbs} lbs` : null].filter(Boolean).join(" · ")
+    ? [profile.gender, profile.age ? `${profile.age} yrs` : null, (profile.heightFt || profile.heightIn) ? `${profile.heightFt || 0}'${profile.heightIn || 0}"` : null, profile.weightLbs ? `${profile.weightLbs} lbs` : null].filter(Boolean).join(" · ")
     : "Not set — tap to personalize";
+  const estMaxHr = estimatedMaxHr(profile);
 
   return (
     <div style={s.container}>
@@ -1062,6 +1097,16 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
               </div>
             </div>
             <div style={s.profileField}>
+              <label style={s.profileLabel}>Age</label>
+              <div style={s.heightRow}>
+                <input type="number" min="0" inputMode="numeric" placeholder="years"
+                  value={profile.age || ""}
+                  onChange={e => setField("age", e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))}
+                  style={s.profileInput} />
+                <span style={s.heightUnit}>years</span>
+              </div>
+            </div>
+            <div style={s.profileField}>
               <label style={s.profileLabel}>Height</label>
               <div style={s.heightRow}>
                 <input type="number" min="0" inputMode="numeric" placeholder="ft"
@@ -1085,6 +1130,23 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
                   style={s.profileInput} />
                 <span style={s.heightUnit}>lbs</span>
               </div>
+            </div>
+            <div style={s.profileField}>
+              <label style={s.profileLabel}>Measured Max HR <span style={s.optionalTag}>(optional)</span></label>
+              <div style={s.heightRow}>
+                <input type="number" min="0" inputMode="numeric" placeholder="bpm"
+                  value={profile.maxHrKnown || ""}
+                  onChange={e => setField("maxHrKnown", e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))}
+                  style={s.profileInput} />
+                <span style={s.heightUnit}>bpm</span>
+              </div>
+              {estMaxHr && (
+                <div style={s.hrEstimate}>
+                  {profile.maxHrKnown
+                    ? `Using your measured max HR: ${estMaxHr} bpm`
+                    : `Estimated max HR (Tanaka): ${estMaxHr} bpm — enter a measured value above if you have one`}
+                </div>
+              )}
             </div>
             <button onClick={() => setShowProfile(false)} style={s.profileDoneBtn}>Done</button>
             <p style={s.profileNote}>
@@ -1137,7 +1199,7 @@ function RoutineScreen({
   exercises, loading, swappingIndex, onSwap, onRefresh, onBack,
   logs, getLog, updateLog, updateNotes, completedSets, toggleSetDone,
   progress, totalSetsCompleted, totalSets, focus, error, onComplete,
-  routineMeta, sectionChecks, toggleSectionCheck, onRemove,
+  routineMeta, sectionChecks, toggleSectionCheck, onRemove, profile,
 }) {
   const [expandedId, setExpandedId] = useState(null);
   const warmup = routineMeta?.warmup;
@@ -1146,6 +1208,7 @@ function RoutineScreen({
   const sessionType = routineMeta?.sessionType || focus;
   const isConditioning = sessionType === "Conditioning";
   const unitWord = isConditioning ? "rounds" : "sets";
+  const zones = isConditioning ? hrZones(estimatedMaxHr(profile)) : null;
 
   return (
     <div style={s.container}>
@@ -1166,6 +1229,27 @@ function RoutineScreen({
           <span style={s.timeBannerText}>
             Estimated total time: <strong style={s.timeBannerMin}>{estMin} min</strong>
           </span>
+        </div>
+      )}
+
+      {zones && !loading && (
+        <div style={s.hrCard}>
+          <div style={s.hrCardTitle}>YOUR HEART-RATE ZONES <span style={s.hrCardMax}>· max {zones.max} bpm</span></div>
+          <div style={s.hrZoneRow}>
+            <span style={{ ...s.hrZoneDot, background: "#f87171" }} />
+            <span style={s.hrZoneLabel}>VO2 / hard work</span>
+            <span style={s.hrZoneVal}>{zones.vo2}</span>
+          </div>
+          <div style={s.hrZoneRow}>
+            <span style={{ ...s.hrZoneDot, background: "#fbbf24" }} />
+            <span style={s.hrZoneLabel}>Threshold / tempo</span>
+            <span style={s.hrZoneVal}>{zones.threshold}</span>
+          </div>
+          <div style={s.hrZoneRow}>
+            <span style={{ ...s.hrZoneDot, background: "#4ade80" }} />
+            <span style={s.hrZoneLabel}>Easy / recovery</span>
+            <span style={s.hrZoneVal}>{zones.easy}</span>
+          </div>
         </div>
       )}
 
@@ -1907,6 +1991,22 @@ const s = {
     border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: "pointer",
   },
   profileNote: { fontSize: 12, color: "#666", lineHeight: 1.5, marginTop: 12 },
+  optionalTag: { color: "#555", fontWeight: 400, textTransform: "none", letterSpacing: 0 },
+  hrEstimate: { fontSize: 12, color: "#7dd3fc", marginTop: 8, lineHeight: 1.4 },
+
+  // HR zones reference card (conditioning days)
+  hrCard: {
+    background: "#0d1418", border: "1px solid #1d3a4d", borderRadius: 12,
+    padding: "14px 16px", marginBottom: 16,
+  },
+  hrCardTitle: {
+    fontSize: 10, fontWeight: 800, letterSpacing: "1.5px", color: "#7dd3fc", marginBottom: 12,
+  },
+  hrCardMax: { color: "#5a7a8a", fontWeight: 600 },
+  hrZoneRow: { display: "flex", alignItems: "center", gap: 10, padding: "5px 0" },
+  hrZoneDot: { width: 10, height: 10, borderRadius: 5, flexShrink: 0 },
+  hrZoneLabel: { flex: 1, fontSize: 13, color: "#bbb" },
+  hrZoneVal: { fontSize: 13, fontWeight: 700, color: "#e0e0e0" },
 
   // Warm-up (ramp-up) sets
   warmupBox: {
