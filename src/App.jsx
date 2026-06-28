@@ -837,6 +837,9 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     setLogs({});
     setCompletedSets({});
     setSectionChecks({});
+    // Session is finished and saved — clear the active routine so "Resume" won't show.
+    setExercises([]);
+    setRoutineMeta(null);
     setScreen("history");
   }, [exercises, focus, totalSets, totalSetsCompleted, completedSets, logs, routineMeta]);
 
@@ -1317,10 +1320,6 @@ function RoutineScreen({
                   </div>
                 </div>
                 <div style={s.cardRight}>
-                  <button onClick={e => { e.stopPropagation(); onSwap(idx); }}
-                    disabled={loading} style={s.swapBtn} title="Swap exercise">
-                    {isSwapping ? "…" : "⇄"}
-                  </button>
                   <span style={s.chevron}>{isExpanded ? "▲" : "▼"}</span>
                 </div>
               </div>
@@ -1389,9 +1388,14 @@ function RoutineScreen({
                     })}
                   </div>
 
-                  <button onClick={() => onRemove(ex.id)} style={s.removeBtn}>
-                    ✕ Remove this exercise
-                  </button>
+                  <div style={s.cardActionRow}>
+                    <button onClick={() => onSwap(idx)} disabled={loading} style={s.shuffleBtn}>
+                      {isSwapping ? "Shuffling…" : "⇄ Shuffle this exercise"}
+                    </button>
+                    <button onClick={() => onRemove(ex.id)} style={s.removeBtn}>
+                      ✕ Remove
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1525,7 +1529,7 @@ function ConditioningCard({ ex, idx, completedSets, toggleSetDone, notes, update
           style={s.condNotes}
         />
 
-        <button onClick={() => onRemove(ex.id)} style={s.removeBtn}>
+        <button onClick={() => onRemove(ex.id)} style={{ ...s.removeBtn, width: "100%" }}>
           ✕ Remove this block
         </button>
       </div>
@@ -2088,11 +2092,17 @@ const s = {
   activityText: { fontSize: 13, color: "#bbb", lineHeight: 1.4 },
   activityTextDone: { color: "#666", textDecoration: "line-through" },
 
-  // Remove exercise
-  removeBtn: {
-    width: "100%", marginTop: 14, padding: "10px", background: "transparent",
-    color: "#a16060", border: "1px solid #3a1a1a", borderRadius: 8,
+  // Exercise action row (shuffle + remove)
+  cardActionRow: { display: "flex", gap: 8, marginTop: 14 },
+  shuffleBtn: {
+    flex: 1, padding: "10px", background: "#161616",
+    color: "#bbb", border: "1px solid #2a2a2a", borderRadius: 8,
     fontSize: 13, fontWeight: 600, cursor: "pointer",
+  },
+  removeBtn: {
+    padding: "10px 16px", background: "transparent",
+    color: "#a16060", border: "1px solid #3a1a1a", borderRadius: 8,
+    fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
   },
 
   // History
