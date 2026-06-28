@@ -984,98 +984,6 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
       </div>
 
       <section style={s.section}>
-        <h2 style={s.sectionLabel}>NEXT SESSION</h2>
-        <div style={{ ...s.nextCard, borderColor: isConditioning ? "#38bdf855" : "#a3e63555" }}>
-          <div style={s.nextType}>
-            <span style={s.nextIcon}>{isConditioning ? "🫀" : "💪"}</span>
-            <span style={{ ...s.nextTypeText, color: isConditioning ? "#7dd3fc" : "#a3e635" }}>
-              {decision.type}{isConditioning ? " · VO2 Max" : ""}
-            </span>
-          </div>
-          <p style={s.nextReason}>{decision.reason}</p>
-        </div>
-      </section>
-
-      {error && <div style={s.errorBox}>{error}</div>}
-
-      <button onClick={() => onGenerate()} disabled={loading}
-        style={{ ...s.primaryBtn, opacity: loading ? 0.5 : 1 }}>
-        {loading ? "Building your session…" : `Generate ${decision.type} Session →`}
-      </button>
-
-      {hasExistingRoutine && (
-        <button onClick={onResume} style={s.secondaryBtn}>
-          Resume Today's Workout
-        </button>
-      )}
-
-      {!showManual ? (
-        <button onClick={() => setShowManual(true)} style={s.ghostBtn}>
-          Choose a different focus
-        </button>
-      ) : (
-        <div style={s.manualBox}>
-          <div style={s.manualLabel}>Pick a session manually:</div>
-          <div style={s.focusRow}>
-            {FOCUS_OPTIONS.map(f => (
-              <button key={f} onClick={() => onGenerate(f)} disabled={loading}
-                style={s.focusBtn}>
-                {f}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {ledgerCount > 0 && (
-        <button onClick={onViewProgress} style={s.ghostBtn}>
-          📈 Progression Tracker ({ledgerCount} {ledgerCount === 1 ? "lift" : "lifts"})
-        </button>
-      )}
-
-      {historyCount > 0 && (
-        <button onClick={onViewHistory} style={s.ghostBtn}>
-          View Past Workouts ({historyCount})
-        </button>
-      )}
-
-      <section style={{ ...s.section, marginTop: 32 }}>
-        <h2 style={s.sectionLabel}>YOUR EQUIPMENT</h2>
-        <div style={s.gearCard}>
-          <GearRow icon="🏋️" name="Bowflex SelectTech Dumbbells" detail="Adjustable weight · single pair" />
-          <div style={s.gearDivider} />
-          <GearRow icon="🪑" name="Adjustable Bench" detail="Flat · Incline · Decline" />
-          <div style={s.gearDivider} />
-          <GearRow icon="🏃" name="Treadmill" detail="Warm-up cardio, cool-down & VO2 intervals" />
-          <div style={s.gearDivider} />
-          <div style={s.gearItem}>
-            <span style={s.gearIcon}>🔩</span>
-            <div>
-              <div style={s.gearName}>Major Fitness F22 Power Rack</div>
-              <div style={s.gearDetail}>35 lb Olympic barbell</div>
-              <div style={s.featureRow}>
-                {["Multi-grip pull-up bar","Dual cable system","Dip bars","Landmine"].map(f => (
-                  <span key={f} style={s.featureBadge}>{f}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div style={s.gearDivider} />
-          <div style={s.gearItem}>
-            <span style={s.gearIcon}>🪙</span>
-            <div>
-              <div style={s.gearName}>Available Plates</div>
-              <div style={s.plateRow}>
-                {["2× 35 lb","2× 15 lb","2× 10 lb"].map(p => (
-                  <span key={p} style={s.plateBadge}>{p}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section style={s.section}>
         <h2 style={s.sectionLabel}>YOUR PROFILE</h2>
         {!showProfile ? (
           <button onClick={() => setShowProfile(true)} style={s.profileSummaryBtn}>
@@ -1156,6 +1064,98 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
           </div>
         )}
       </section>
+
+      <section style={s.section}>
+        <h2 style={s.sectionLabel}>YOUR EQUIPMENT</h2>
+        <div style={s.gearCard}>
+          <GearRow icon="🏋️" name="Bowflex SelectTech Dumbbells" detail="Adjustable weight · single pair" />
+          <div style={s.gearDivider} />
+          <GearRow icon="🪑" name="Adjustable Bench" detail="Flat · Incline · Decline" />
+          <div style={s.gearDivider} />
+          <GearRow icon="🏃" name="Treadmill" detail="Warm-up cardio, cool-down & VO2 intervals" />
+          <div style={s.gearDivider} />
+          <div style={s.gearItem}>
+            <span style={s.gearIcon}>🔩</span>
+            <div>
+              <div style={s.gearName}>Major Fitness F22 Power Rack</div>
+              <div style={s.gearDetail}>35 lb Olympic barbell</div>
+              <div style={s.featureRow}>
+                {["Multi-grip pull-up bar","Dual cable system","Dip bars","Landmine"].map(f => (
+                  <span key={f} style={s.featureBadge}>{f}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={s.gearDivider} />
+          <div style={s.gearItem}>
+            <span style={s.gearIcon}>🪙</span>
+            <div>
+              <div style={s.gearName}>Available Plates</div>
+              <div style={s.plateRow}>
+                {["2× 35 lb","2× 15 lb","2× 10 lb"].map(p => (
+                  <span key={p} style={s.plateBadge}>{p}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section style={s.section}>
+        <h2 style={s.sectionLabel}>NEXT SESSION</h2>
+        <div style={{ ...s.nextCard, borderColor: isConditioning ? "#38bdf855" : "#a3e63555" }}>
+          <div style={s.nextType}>
+            <span style={s.nextIcon}>{isConditioning ? "🫀" : "💪"}</span>
+            <span style={{ ...s.nextTypeText, color: isConditioning ? "#7dd3fc" : "#a3e635" }}>
+              {decision.type}{isConditioning ? " · VO2 Max" : ""}
+            </span>
+          </div>
+          <p style={s.nextReason}>{decision.reason}</p>
+        </div>
+      </section>
+
+      {error && <div style={s.errorBox}>{error}</div>}
+
+      <button onClick={() => onGenerate()} disabled={loading}
+        style={{ ...s.primaryBtn, opacity: loading ? 0.5 : 1 }}>
+        {loading ? "Building your session…" : `Generate ${decision.type} Session →`}
+      </button>
+
+      {hasExistingRoutine && (
+        <button onClick={onResume} style={s.secondaryBtn}>
+          Resume Today's Workout
+        </button>
+      )}
+
+      {!showManual ? (
+        <button onClick={() => setShowManual(true)} style={s.ghostBtn}>
+          Choose a different focus
+        </button>
+      ) : (
+        <div style={s.manualBox}>
+          <div style={s.manualLabel}>Pick a session manually:</div>
+          <div style={s.focusRow}>
+            {FOCUS_OPTIONS.map(f => (
+              <button key={f} onClick={() => onGenerate(f)} disabled={loading}
+                style={s.focusBtn}>
+                {f}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {ledgerCount > 0 && (
+        <button onClick={onViewProgress} style={s.ghostBtn}>
+          📈 Progression Tracker ({ledgerCount} {ledgerCount === 1 ? "lift" : "lifts"})
+        </button>
+      )}
+
+      {historyCount > 0 && (
+        <button onClick={onViewHistory} style={s.ghostBtn}>
+          View Past Workouts ({historyCount})
+        </button>
+      )}
 
       <div style={s.resetZone}>
         {confirmReset ? (
