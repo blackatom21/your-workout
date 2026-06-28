@@ -599,17 +599,15 @@ export default function App() {
   // Tracks the in-flight AI request so it can be aborted (timeout / unmount).
   const abortRef = useRef(null);
 
-  // Persist every state change to localStorage
-  useEffect(() => { lsSet(LS_KEYS.screen, screen); }, [screen]);
-  useEffect(() => { lsSet(LS_KEYS.focus, focus); }, [focus]);
-  useEffect(() => { lsSet(LS_KEYS.exercises, exercises); }, [exercises]);
-  useEffect(() => { lsSet(LS_KEYS.logs, logs); }, [logs]);
-  useEffect(() => { lsSet(LS_KEYS.completedSets, completedSets); }, [completedSets]);
-  useEffect(() => { lsSet(LS_KEYS.ledger, ledger); }, [ledger]);
-  useEffect(() => { lsSet(LS_KEYS.profile, profile); }, [profile]);
-  useEffect(() => { lsSet(LS_KEYS.routineMeta, routineMeta); }, [routineMeta]);
-  useEffect(() => { lsSet(LS_KEYS.sectionChecks, sectionChecks); }, [sectionChecks]);
-  useEffect(() => { lsSet(LS_KEYS.history, history); }, [history]);
+  // The day-scoped persistence effects (logs/completedSets/sectionChecks) must
+  // NOT write on the initial mount commit: at that point state still holds the
+  // rehydrated value, and if it's a new day the reset (setLogs({}) below) hasn't
+  // applied yet — writing here would persist stale data before it's cleared.
+  // Skipping the first run of each gated effect removes the race entirely; the
+  // reset's own re-render then writes the cleared value normally.
+  const skipFirstLogsWrite = useRef(true);
+  const skipFirstCompletedWrite = useRef(true);
+  const skipFirstChecksWrite = useRef(true);
 
   // Auto-reset logs if it's a new day (keep exercises, clear progress).
   // Re-checks on mount AND whenever the tab regains focus/visibility, so a
@@ -635,6 +633,29 @@ export default function App() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
+
+  // Persist every state change to localStorage. Day-scoped keys skip their first
+  // run (see refs above) so the mount-time new-day reset is never clobbered by a
+  // stale write; the non-day-scoped keys persist freely from the first commit.
+  useEffect(() => { lsSet(LS_KEYS.screen, screen); }, [screen]);
+  useEffect(() => { lsSet(LS_KEYS.focus, focus); }, [focus]);
+  useEffect(() => { lsSet(LS_KEYS.exercises, exercises); }, [exercises]);
+  useEffect(() => {
+    if (skipFirstLogsWrite.current) { skipFirstLogsWrite.current = false; return; }
+    lsSet(LS_KEYS.logs, logs);
+  }, [logs]);
+  useEffect(() => {
+    if (skipFirstCompletedWrite.current) { skipFirstCompletedWrite.current = false; return; }
+    lsSet(LS_KEYS.completedSets, completedSets);
+  }, [completedSets]);
+  useEffect(() => { lsSet(LS_KEYS.ledger, ledger); }, [ledger]);
+  useEffect(() => { lsSet(LS_KEYS.profile, profile); }, [profile]);
+  useEffect(() => { lsSet(LS_KEYS.routineMeta, routineMeta); }, [routineMeta]);
+  useEffect(() => {
+    if (skipFirstChecksWrite.current) { skipFirstChecksWrite.current = false; return; }
+    lsSet(LS_KEYS.sectionChecks, sectionChecks);
+  }, [sectionChecks]);
+  useEffect(() => { lsSet(LS_KEYS.history, history); }, [history]);
 
   // ── API call (proxied through /api/generate → Gemini) ────────────────────
   // Aborts any previous in-flight request and enforces a 45s timeout so a hung
