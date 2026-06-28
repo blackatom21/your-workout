@@ -374,24 +374,6 @@ function dayOfWeekFromIso(iso) {
 // ── JSON parsing helpers ─────────────────────────────────────────────────────
 // With responseMimeType: "application/json" the proxy returns clean JSON,
 // but these stay tolerant of markdown fences or stray surrounding text.
-function parseArray(text) {
-  if (!text) return null;
-  // Try direct parse first (the expected case)
-  try {
-    const v = JSON.parse(text.trim());
-    if (Array.isArray(v)) return v;
-  } catch {}
-  // Fall back to extracting a fenced or bare array
-  try {
-    const m = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/(\[[\s\S]*\])/);
-    if (m) {
-      const v = JSON.parse(m[1]);
-      if (Array.isArray(v)) return v;
-    }
-  } catch {}
-  return null;
-}
-
 function parseObject(text) {
   if (!text) return null;
   try {
@@ -966,10 +948,6 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
   const isConditioning = decision.type === "Conditioning";
 
   const setField = (field, value) => setProfile({ ...profile, [field]: value });
-  const hasProfile = profile && (profile.gender || profile.weightLbs || profile.heightFt || profile.heightIn || profile.age);
-  const profileSummary = hasProfile
-    ? [profile.gender, profile.age ? `${profile.age} yrs` : null, (profile.heightFt || profile.heightIn) ? `${profile.heightFt || 0}'${profile.heightIn || 0}"` : null, profile.weightLbs ? `${profile.weightLbs} lbs` : null].filter(Boolean).join(" · ")
-    : "Not set — tap to personalize";
   const estMaxHr = estimatedMaxHr(profile);
 
   return (
@@ -992,12 +970,7 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
           <h2 style={s.sectionLabel}>YOUR PROFILE</h2>
           <span style={s.collapseChevron}>{showProfile ? "▲" : "▼"}</span>
         </button>
-        {!showProfile ? (
-          <div style={s.collapsedSummary}>
-            <span style={s.profileIcon}>👤</span>
-            <span style={s.collapsedSummaryText}>{profileSummary}</span>
-          </div>
-        ) : (
+        {showProfile && (
           <div style={s.profileCard}>
             <div style={s.profileField}>
               <label style={s.profileLabel}>Gender</label>
@@ -1076,12 +1049,7 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
           <h2 style={s.sectionLabel}>YOUR EQUIPMENT</h2>
           <span style={s.collapseChevron}>{showEquipment ? "▲" : "▼"}</span>
         </button>
-        {!showEquipment ? (
-          <div style={s.collapsedSummary}>
-            <span style={s.profileIcon}>🏋️</span>
-            <span style={s.collapsedSummaryText}>Bowflex · F22 rack · bench · treadmill · plates</span>
-          </div>
-        ) : (
+        {showEquipment && (
           <div style={s.gearCard}>
             <GearRow icon="🏋️" name="Bowflex SelectTech Dumbbells" detail="Adjustable weight · single pair" />
             <div style={s.gearDivider} />
@@ -1776,13 +1744,21 @@ const s = {
     cursor: "pointer", marginBottom: 10,
   },
   collapseChevron: { color: "#666", fontSize: 11, marginBottom: 14 },
-  collapsedSummary: {
-    display: "flex", alignItems: "center", gap: 12,
-    background: "#111", border: "1px solid #1e1e1e", borderRadius: 12, padding: "14px 16px",
-  },
-  collapsedSummaryText: { flex: 1, fontSize: 14, color: "#ccc" },
   gearCard: {
     background: "#111", border: "1px solid #1e1e1e", borderRadius: 14, padding: "4px 0",
+  },
+  ghostBtn: {
+    display: "block", width: "100%", padding: "12px", background: "transparent",
+    color: "#888", border: "1px solid #2a2a2a", borderRadius: 12, fontSize: 14,
+    fontWeight: 600, cursor: "pointer", marginBottom: 12,
+  },
+  profileCard: {
+    background: "#111", border: "1px solid #1e1e1e", borderRadius: 12, padding: "16px",
+  },
+  profileField: { marginBottom: 16 },
+  profileLabel: {
+    display: "block", fontSize: 11, fontWeight: 700, letterSpacing: "1px",
+    color: "#888", textTransform: "uppercase", marginBottom: 8,
   },
   gearItem: { display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 18px" },
   gearIcon: { fontSize: 22, minWidth: 28, textAlign: "center", paddingTop: 2 },
@@ -1804,9 +1780,6 @@ const s = {
     padding: "7px 14px", borderRadius: 20, border: "1px solid #2a2a2a",
     background: "#111", color: "#888", fontSize: 13, cursor: "pointer",
   },
-  focusBtnActive: {
-    border: "1px solid #a3e635", background: "#a3e635", color: "#0a0a0a", fontWeight: 700,
-  },
   primaryBtn: {
     display: "block", width: "100%", padding: "16px", background: "#a3e635",
     color: "#0a0a0a", border: "none", borderRadius: 12, fontSize: 16,
@@ -1815,12 +1788,6 @@ const s = {
   secondaryBtn: {
     display: "block", width: "100%", padding: "14px", background: "transparent",
     color: "#a3e635", border: "1px solid #a3e635", borderRadius: 12, fontSize: 15,
-    fontWeight: 600, cursor: "pointer", marginBottom: 12,
-  },
-  hint: { textAlign: "center", color: "#555", fontSize: 13 },
-  ghostBtn: {
-    display: "block", width: "100%", padding: "12px", background: "transparent",
-    color: "#888", border: "1px solid #2a2a2a", borderRadius: 12, fontSize: 14,
     fontWeight: 600, cursor: "pointer", marginBottom: 12,
   },
   errorBox: {
@@ -1865,17 +1832,9 @@ const s = {
   cardMeta: { fontSize: 12, color: "#555", marginTop: 2 },
   setsDoneTag: { color: "#a3e635" },
   cardRight: { display: "flex", alignItems: "center", gap: 10 },
-  swapBtn: {
-    background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888",
-    borderRadius: 6, cursor: "pointer", fontSize: 14, padding: "4px 8px",
-  },
   chevron: { color: "#444", fontSize: 10 },
   cardBody: { padding: "16px 18px 18px", borderTop: "1px solid #1a1a1a" },
   cardDesc: { fontSize: 13, color: "#888", lineHeight: 1.6, marginBottom: 10 },
-  weightNote: {
-    fontSize: 13, color: "#a3e635", background: "#0d1f00",
-    padding: "8px 12px", borderRadius: 8, marginBottom: 16,
-  },
   trackedDot: { color: "#a3e635", fontSize: 10, marginRight: 6, verticalAlign: "middle" },
   rxInline: { color: "#a3e635", fontWeight: 700 },
   rxCard: {
@@ -1984,22 +1943,6 @@ const s = {
   },
 
   // Profile
-  profileSummaryBtn: {
-    display: "flex", alignItems: "center", gap: 12, width: "100%",
-    background: "#111", border: "1px solid #1e1e1e", borderRadius: 12,
-    padding: "14px 16px", cursor: "pointer", textAlign: "left",
-  },
-  profileIcon: { fontSize: 20 },
-  profileSummaryText: { flex: 1, fontSize: 14, color: "#ccc" },
-  profileEdit: { fontSize: 12, fontWeight: 700, color: "#a3e635" },
-  profileCard: {
-    background: "#111", border: "1px solid #1e1e1e", borderRadius: 12, padding: "16px",
-  },
-  profileField: { marginBottom: 16 },
-  profileLabel: {
-    display: "block", fontSize: 11, fontWeight: 700, letterSpacing: "1px",
-    color: "#888", textTransform: "uppercase", marginBottom: 8,
-  },
   genderRow: { display: "flex", gap: 8 },
   genderBtn: {
     flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2a2a2a",
