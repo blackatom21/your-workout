@@ -962,6 +962,7 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
   const [confirmReset, setConfirmReset] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showEquipment, setShowEquipment] = useState(false);
   const isConditioning = decision.type === "Conditioning";
 
   const setField = (field, value) => setProfile({ ...profile, [field]: value });
@@ -987,13 +988,15 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
       </div>
 
       <section style={s.section}>
-        <h2 style={s.sectionLabel}>YOUR PROFILE</h2>
+        <button style={s.collapseHeader} onClick={() => setShowProfile(!showProfile)}>
+          <h2 style={s.sectionLabel}>YOUR PROFILE</h2>
+          <span style={s.collapseChevron}>{showProfile ? "▲" : "▼"}</span>
+        </button>
         {!showProfile ? (
-          <button onClick={() => setShowProfile(true)} style={s.profileSummaryBtn}>
+          <div style={s.collapsedSummary}>
             <span style={s.profileIcon}>👤</span>
-            <span style={s.profileSummaryText}>{profileSummary}</span>
-            <span style={s.profileEdit}>Edit</span>
-          </button>
+            <span style={s.collapsedSummaryText}>{profileSummary}</span>
+          </div>
         ) : (
           <div style={s.profileCard}>
             <div style={s.profileField}>
@@ -1069,14 +1072,23 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
       </section>
 
       <section style={s.section}>
-        <h2 style={s.sectionLabel}>YOUR EQUIPMENT</h2>
-        <div style={s.gearCard}>
-          <GearRow icon="🏋️" name="Bowflex SelectTech Dumbbells" detail="Adjustable weight · single pair" />
-          <div style={s.gearDivider} />
-          <GearRow icon="🪑" name="Adjustable Bench" detail="Flat · Incline · Decline" />
-          <div style={s.gearDivider} />
-          <GearRow icon="🏃" name="Treadmill" detail="Warm-up cardio, cool-down & VO2 intervals" />
-          <div style={s.gearDivider} />
+        <button style={s.collapseHeader} onClick={() => setShowEquipment(!showEquipment)}>
+          <h2 style={s.sectionLabel}>YOUR EQUIPMENT</h2>
+          <span style={s.collapseChevron}>{showEquipment ? "▲" : "▼"}</span>
+        </button>
+        {!showEquipment ? (
+          <div style={s.collapsedSummary}>
+            <span style={s.profileIcon}>🏋️</span>
+            <span style={s.collapsedSummaryText}>Bowflex · F22 rack · bench · treadmill · plates</span>
+          </div>
+        ) : (
+          <div style={s.gearCard}>
+            <GearRow icon="🏋️" name="Bowflex SelectTech Dumbbells" detail="Adjustable weight · single pair" />
+            <div style={s.gearDivider} />
+            <GearRow icon="🪑" name="Adjustable Bench" detail="Flat · Incline · Decline" />
+            <div style={s.gearDivider} />
+            <GearRow icon="🏃" name="Treadmill" detail="Warm-up cardio, cool-down & VO2 intervals" />
+            <div style={s.gearDivider} />
           <div style={s.gearItem}>
             <span style={s.gearIcon}>🔩</span>
             <div>
@@ -1102,6 +1114,7 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
             </div>
           </div>
         </div>
+        )}
       </section>
 
       <section style={s.section}>
@@ -1757,6 +1770,17 @@ const s = {
     fontSize: 11, fontWeight: 700, letterSpacing: "2px",
     color: "#a3e635", margin: "0 0 14px",
   },
+  collapseHeader: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    width: "100%", background: "transparent", border: "none", padding: 0,
+    cursor: "pointer", marginBottom: 10,
+  },
+  collapseChevron: { color: "#666", fontSize: 11, marginBottom: 14 },
+  collapsedSummary: {
+    display: "flex", alignItems: "center", gap: 12,
+    background: "#111", border: "1px solid #1e1e1e", borderRadius: 12, padding: "14px 16px",
+  },
+  collapsedSummaryText: { flex: 1, fontSize: 14, color: "#ccc" },
   gearCard: {
     background: "#111", border: "1px solid #1e1e1e", borderRadius: 14, padding: "4px 0",
   },
