@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 const EQUIPMENT_DESCRIPTION = `
 - Bowflex SelectTech adjustable dumbbells (adjustable weight, single pair)
 - Adjustable bench (can be set flat, incline, or decline)
+- Treadmill (good for warm-up cardio and cool-down walking)
 - Major Fitness F22 power rack, which includes ALL of the following built-in:
     • Standard Olympic barbell (45 lbs)
     • Multi-grip pull-up bar with wide, neutral, and close-grip handle options
@@ -27,6 +28,8 @@ const LS_KEYS = {
   screen: "yw_screen",
   lastDate: "yw_lastDate",
   history: "yw_history",
+  routineMeta: "yw_routineMeta",
+  sectionChecks: "yw_sectionChecks",
 };
 
 function lsGet(key, fallback) {
@@ -87,6 +90,12 @@ function parseObject(text) {
   return null;
 }
 
+// The full routine is a JSON object with estimated_minutes, warmup,
+// exercises[], and cooldown — same parsing path as a plain object.
+function parseRoutine(text) {
+  return parseObject(text);
+}
+
 // ── Root component ───────────────────────────────────────────────────────────
 export default function App() {
   const [screen, setScreen]             = useState(() => lsGet(LS_KEYS.screen, "setup"));
@@ -94,6 +103,8 @@ export default function App() {
   const [exercises, setExercises]       = useState(() => lsGet(LS_KEYS.exercises, []));
   const [logs, setLogs]                 = useState(() => lsGet(LS_KEYS.logs, {}));
   const [completedSets, setCompletedSets] = useState(() => lsGet(LS_KEYS.completedSets, {}));
+  const [routineMeta, setRoutineMeta]   = useState(() => lsGet(LS_KEYS.routineMeta, null));
+  const [sectionChecks, setSectionChecks] = useState(() => lsGet(LS_KEYS.sectionChecks, {}));
   const [history, setHistory]           = useState(() => lsGet(LS_KEYS.history, []));
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState(null);
@@ -105,6 +116,8 @@ export default function App() {
   useEffect(() => { lsSet(LS_KEYS.exercises, exercises); }, [exercises]);
   useEffect(() => { lsSet(LS_KEYS.logs, logs); }, [logs]);
   useEffect(() => { lsSet(LS_KEYS.completedSets, completedSets); }, [completedSets]);
+  useEffect(() => { lsSet(LS_KEYS.routineMeta, routineMeta); }, [routineMeta]);
+  useEffect(() => { lsSet(LS_KEYS.sectionChecks, sectionChecks); }, [sectionChecks]);
   useEffect(() => { lsSet(LS_KEYS.history, history); }, [history]);
 
   // Auto-reset logs if it's a new day (keep exercises, clear progress)
@@ -114,6 +127,7 @@ export default function App() {
     if (last && last !== today) {
       setLogs({});
       setCompletedSets({});
+      setSectionChecks({});
     }
     lsSet(LS_KEYS.lastDate, today);
   }, []);
@@ -134,26 +148,54 @@ export default function App() {
   const generateRoutine = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const prompt = `You are a certified personal trainer. Generate a daily functional exercise routine using ONLY this equipment:
+    const prompt = `You are a certified personal trainer. Build a complete daily workout session using ONLY this equipment:
 ${EQUIPMENT_DESCRIPTION}
 
 Focus: ${focus}.
-Provide exactly 6 exercises. For any barbell exercise, specify the exact plate loading (e.g. "45 lb bar + 35 lb each side = 115 lbs total"). For dumbbell exercises, suggest a starting dumbbell weight in lbs.
-Respond ONLY with a JSON array (no markdown, no extra text):
-[{"name":"Exercise Name","sets":3,"reps":"8-10","weight_note":"Specific weight suggestion using available equipment","muscles":"Quads, Glutes","description":"Brief technique tip."}]
-Make exercises functional, practical, and well-balanced for this exact equipment.`;
+
+The session MUST have three parts:
+1. A warm-up that includes light cardio (use the treadmill) AND dynamic stretching.
+2. Exactly 6 main strength/functional exercises. For any barbell exercise, specify the exact plate loading (e.g. "45 lb bar + 35 lb each side = 115 lbs total"). For dumbbell exercises, suggest a starting dumbbell weight in lbs.
+3. A cool-down that includes light treadmill walking AND static stretching.
+
+Also estimate the total time in minutes to complete the entire session (warm-up + main work + cool-down), accounting for sets, rest, and transitions.
+
+Respond ONLY with a JSON object (no markdown, no extra text) in EXACTLY this shape:
+{
+  "estimated_minutes": 55,
+  "warmup": {
+    "title": "Warm-Up & Dynamic Stretching",
+    "duration": "6 min",
+    "activities": ["5 min treadmill brisk walk or light jog", "Arm circles, 30 sec", "Leg swings, 10 each side", "Bodyweight squats, 10 reps"]
+  },
+  "exercises": [
+    {"name":"Exercise Name","sets":3,"reps":"8-10","weight_note":"Specific weight suggestion","muscles":"Quads, Glutes","description":"Brief technique tip."}
+  ],
+  "cooldown": {
+    "title": "Cool-Down & Static Stretching",
+    "duration": "6 min",
+    "activities": ["3 min treadmill walk to lower heart rate", "Hamstring stretch, 30 sec each", "Chest doorway stretch, 30 sec"]
+  }
+}
+Make everything practical and well-balanced for this exact equipment and focus.`;
 
     try {
       const text = await callAI(prompt);
-      const arr = parseArray(text);
-      if (Array.isArray(arr) && arr.length > 0) {
-        const withIds = arr.map((e, i) => ({ ...e, id: `ex-${Date.now()}-${i}` }));
+      const routine = parseRoutine(text);
+      if (routine && Array.isArray(routine.exercises) && routine.exercises.length > 0) {
+        const withIds = routine.exercises.map((e, i) => ({ ...e, id: `ex-${Date.now()}-${i}` }));
         setExercises(withIds);
+        setRoutineMeta({
+          estimatedMinutes: routine.estimated_minutes ?? null,
+          warmup: routine.warmup ?? null,
+          cooldown: routine.cooldown ?? null,
+        });
         setLogs({});
         setCompletedSets({});
+        setSectionChecks({});
         setScreen("routine");
       } else {
-        setError("Couldn't parse exercises — tap Generate to try again.");
+        setError("Couldn't parse the routine — tap Generate to try again.");
       }
     } catch (e) {
       setError(e.message || "Something went wrong.");
@@ -218,6 +260,22 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     setCompletedSets(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
+  // ── Remove an exercise from the current routine ───────────────────────────
+  const removeExercise = useCallback((exerciseId) => {
+    setExercises(prev => prev.filter(ex => ex.id !== exerciseId));
+    setLogs(prev => { const n = { ...prev }; delete n[exerciseId]; return n; });
+    setCompletedSets(prev => {
+      const n = { ...prev };
+      Object.keys(n).filter(k => k.startsWith(exerciseId)).forEach(k => delete n[k]);
+      return n;
+    });
+  }, []);
+
+  // ── Check off a warm-up / cool-down activity ──────────────────────────────
+  const toggleSectionCheck = useCallback((key) => {
+    setSectionChecks(prev => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
   // ── Progress ──────────────────────────────────────────────────────────────
   const totalSets = exercises.reduce((a, ex) => a + ex.sets, 0);
   const totalSetsCompleted = exercises.reduce((a, ex) => {
@@ -235,6 +293,9 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
       focus,
       totalSets,
       completedSets: totalSetsCompleted,
+      estimatedMinutes: routineMeta?.estimatedMinutes ?? null,
+      warmup: routineMeta?.warmup ?? null,
+      cooldown: routineMeta?.cooldown ?? null,
       exercises: exercises.map(ex => ({
         name: ex.name,
         muscles: ex.muscles,
@@ -254,8 +315,9 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     // Clear the active session and jump to history
     setLogs({});
     setCompletedSets({});
+    setSectionChecks({});
     setScreen("history");
-  }, [exercises, focus, totalSets, totalSetsCompleted, completedSets, logs]);
+  }, [exercises, focus, totalSets, totalSetsCompleted, completedSets, logs, routineMeta]);
 
   // ── Repeat a saved workout as a fresh active routine ──────────────────────
   const repeatWorkout = useCallback((record) => {
@@ -270,8 +332,14 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     }));
     setFocus(record.focus);
     setExercises(fresh);
+    setRoutineMeta({
+      estimatedMinutes: record.estimatedMinutes ?? null,
+      warmup: record.warmup ?? null,
+      cooldown: record.cooldown ?? null,
+    });
     setLogs({});
     setCompletedSets({});
+    setSectionChecks({});
     setScreen("routine");
   }, []);
 
@@ -301,6 +369,9 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
           progress={progress} totalSetsCompleted={totalSetsCompleted}
           totalSets={totalSets} focus={focus} error={error}
           onComplete={completeWorkout}
+          routineMeta={routineMeta}
+          sectionChecks={sectionChecks} toggleSectionCheck={toggleSectionCheck}
+          onRemove={removeExercise}
         />
       )}
       {screen === "history" && (
@@ -338,6 +409,8 @@ function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingR
           <GearRow icon="🏋️" name="Bowflex SelectTech Dumbbells" detail="Adjustable weight · single pair" />
           <div style={s.gearDivider} />
           <GearRow icon="🪑" name="Adjustable Bench" detail="Flat · Incline · Decline" />
+          <div style={s.gearDivider} />
+          <GearRow icon="🏃" name="Treadmill" detail="Warm-up cardio & cool-down walking" />
           <div style={s.gearDivider} />
           <div style={s.gearItem}>
             <span style={s.gearIcon}>🔩</span>
@@ -419,8 +492,12 @@ function RoutineScreen({
   exercises, loading, swappingIndex, onSwap, onRefresh, onBack,
   logs, getLog, updateLog, completedSets, toggleSetDone,
   progress, totalSetsCompleted, totalSets, focus, error, onComplete,
+  routineMeta, sectionChecks, toggleSectionCheck, onRemove,
 }) {
   const [expandedId, setExpandedId] = useState(null);
+  const warmup = routineMeta?.warmup;
+  const cooldown = routineMeta?.cooldown;
+  const estMin = routineMeta?.estimatedMinutes;
 
   return (
     <div style={s.container}>
@@ -435,6 +512,15 @@ function RoutineScreen({
         </button>
       </div>
 
+      {estMin != null && !loading && (
+        <div style={s.timeBanner}>
+          <span style={s.timeBannerIcon}>⏱️</span>
+          <span style={s.timeBannerText}>
+            Estimated total time: <strong style={s.timeBannerMin}>{estMin} min</strong>
+          </span>
+        </div>
+      )}
+
       <div style={s.progressBar}>
         <div style={{ ...s.progressFill, width: `${progress}%` }} />
       </div>
@@ -443,9 +529,21 @@ function RoutineScreen({
       {error && <div style={s.errorBox}>{error}</div>}
 
       {loading && swappingIndex === null ? (
-        <div style={s.loadingBlock}>Generating exercises…</div>
+        <div style={s.loadingBlock}>Building your session…</div>
       ) : (
-        exercises.map((ex, idx) => {
+        <>
+          {warmup && (
+            <SectionCard
+              section={warmup}
+              prefix="warmup"
+              accent="#38bdf8"
+              label="WARM-UP"
+              sectionChecks={sectionChecks}
+              toggleSectionCheck={toggleSectionCheck}
+            />
+          )}
+
+          {exercises.map((ex, idx) => {
           const isExpanded = expandedId === ex.id;
           const setLog = getLog(ex.id, ex.sets);
           const isSwapping = swappingIndex === idx;
@@ -510,11 +608,27 @@ function RoutineScreen({
                       );
                     })}
                   </div>
+
+                  <button onClick={() => onRemove(ex.id)} style={s.removeBtn}>
+                    ✕ Remove this exercise
+                  </button>
                 </div>
               )}
             </div>
           );
-        })
+        })}
+
+          {cooldown && (
+            <SectionCard
+              section={cooldown}
+              prefix="cooldown"
+              accent="#a78bfa"
+              label="COOL-DOWN"
+              sectionChecks={sectionChecks}
+              toggleSectionCheck={toggleSectionCheck}
+            />
+          )}
+        </>
       )}
 
       {progress === 100 && (
@@ -531,6 +645,46 @@ function RoutineScreen({
           Saves a record with your logged weights and reps
         </p>
       )}
+    </div>
+  );
+}
+
+// ── Warm-up / Cool-down checklist card ────────────────────────────────────────
+function SectionCard({ section, prefix, accent, label, sectionChecks, toggleSectionCheck }) {
+  const activities = section?.activities || [];
+  const doneCount = activities.filter((_, i) => sectionChecks[`${prefix}-${i}`]).length;
+  return (
+    <div style={{ ...s.sectionCard, borderColor: accent + "44" }}>
+      <div style={s.sectionCardHeader}>
+        <div>
+          <span style={{ ...s.sectionCardLabel, color: accent }}>{label}</span>
+          <div style={s.sectionCardTitle}>{section.title}</div>
+        </div>
+        <div style={s.sectionCardMeta}>
+          {section.duration && <span style={s.sectionDuration}>{section.duration}</span>}
+          {activities.length > 0 && (
+            <span style={s.sectionDoneTag}>{doneCount}/{activities.length}</span>
+          )}
+        </div>
+      </div>
+      <div style={s.sectionActivityList}>
+        {activities.map((act, i) => {
+          const key = `${prefix}-${i}`;
+          const checked = !!sectionChecks[key];
+          return (
+            <button key={i} onClick={() => toggleSectionCheck(key)}
+              style={{ ...s.activityRow, ...(checked ? s.activityRowDone : {}) }}>
+              <span style={{
+                ...s.activityCheck,
+                background: checked ? accent : "transparent",
+                borderColor: checked ? accent : "#333",
+                color: checked ? "#0a0a0a" : "transparent",
+              }}>✓</span>
+              <span style={{ ...s.activityText, ...(checked ? s.activityTextDone : {}) }}>{act}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -571,6 +725,7 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
                     <div style={s.cardName}>{rec.focus}</div>
                     <div style={s.cardMeta}>
                       {formatDate(rec.date)} · {rec.exercises.length} exercises · {rec.completedSets}/{rec.totalSets} sets ({pct}%)
+                      {rec.estimatedMinutes != null && ` · ~${rec.estimatedMinutes} min`}
                     </div>
                   </div>
                 </div>
@@ -579,6 +734,12 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
 
               {isExpanded && (
                 <div style={s.cardBody}>
+                  {rec.warmup && (
+                    <div style={s.recSection}>
+                      <span style={{ ...s.recSectionLabel, color: "#38bdf8" }}>WARM-UP</span>
+                      <span style={s.recSectionText}>{rec.warmup.title}{rec.warmup.duration ? ` · ${rec.warmup.duration}` : ""}</span>
+                    </div>
+                  )}
                   {rec.exercises.map((ex, i) => (
                     <div key={i} style={s.recExercise}>
                       <div style={s.recExName}>{ex.name}</div>
@@ -596,6 +757,12 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
                       </div>
                     </div>
                   ))}
+                  {rec.cooldown && (
+                    <div style={s.recSection}>
+                      <span style={{ ...s.recSectionLabel, color: "#a78bfa" }}>COOL-DOWN</span>
+                      <span style={s.recSectionText}>{rec.cooldown.title}{rec.cooldown.duration ? ` · ${rec.cooldown.duration}` : ""}</span>
+                    </div>
+                  )}
 
                   <div style={s.recActions}>
                     <button onClick={() => onRepeat(rec)} style={s.repeatBtn}>
@@ -791,12 +958,67 @@ const s = {
   },
   completeHint: { textAlign: "center", color: "#555", fontSize: 12, marginTop: 8 },
 
+  // Time estimate banner
+  timeBanner: {
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+    background: "#10231f", border: "1px solid #1d4d44", borderRadius: 12,
+    padding: "12px 16px", marginBottom: 16,
+  },
+  timeBannerIcon: { fontSize: 16 },
+  timeBannerText: { fontSize: 14, color: "#9fdccb" },
+  timeBannerMin: { color: "#a3e635" },
+
+  // Warm-up / cool-down section cards
+  sectionCard: {
+    background: "#111", border: "1px solid #1e1e1e", borderRadius: 14,
+    marginBottom: 12, overflow: "hidden",
+  },
+  sectionCardHeader: {
+    display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+    padding: "14px 18px 10px",
+  },
+  sectionCardLabel: { fontSize: 10, fontWeight: 800, letterSpacing: "2px" },
+  sectionCardTitle: { fontWeight: 700, fontSize: 15, color: "#f0f0f0", marginTop: 3 },
+  sectionCardMeta: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 },
+  sectionDuration: {
+    fontSize: 11, fontWeight: 700, color: "#888",
+    background: "#1a1a1a", border: "1px solid #2a2a2a", padding: "2px 8px", borderRadius: 6,
+  },
+  sectionDoneTag: { fontSize: 11, color: "#555" },
+  sectionActivityList: { padding: "0 12px 12px" },
+  activityRow: {
+    display: "flex", alignItems: "center", gap: 10, width: "100%",
+    background: "transparent", border: "none", padding: "8px 6px",
+    cursor: "pointer", textAlign: "left", borderRadius: 8,
+  },
+  activityRowDone: { background: "#0f140f" },
+  activityCheck: {
+    minWidth: 20, height: 20, borderRadius: 6, border: "1px solid #333",
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    fontSize: 12, fontWeight: 800,
+  },
+  activityText: { fontSize: 13, color: "#bbb", lineHeight: 1.4 },
+  activityTextDone: { color: "#666", textDecoration: "line-through" },
+
+  // Remove exercise
+  removeBtn: {
+    width: "100%", marginTop: 14, padding: "10px", background: "transparent",
+    color: "#a16060", border: "1px solid #3a1a1a", borderRadius: 8,
+    fontSize: 13, fontWeight: 600, cursor: "pointer",
+  },
+
   // History
   emptyState: { textAlign: "center", padding: "60px 20px" },
   emptyIcon: { fontSize: 48, marginBottom: 16 },
   emptyTitle: { fontSize: 17, fontWeight: 700, color: "#ccc", marginBottom: 8 },
   emptyText: { fontSize: 14, color: "#555", lineHeight: 1.5 },
   recExercise: { padding: "12px 0", borderBottom: "1px solid #1a1a1a" },
+  recSection: {
+    display: "flex", alignItems: "center", gap: 8, padding: "10px 0",
+    borderBottom: "1px solid #1a1a1a",
+  },
+  recSectionLabel: { fontSize: 10, fontWeight: 800, letterSpacing: "1.5px", minWidth: 76 },
+  recSectionText: { fontSize: 13, color: "#999" },
   recExName: { fontWeight: 600, fontSize: 14, color: "#f0f0f0" },
   recExMeta: { fontSize: 12, color: "#555", marginTop: 2, marginBottom: 8 },
   recSetList: { display: "flex", flexWrap: "wrap", gap: 6 },
