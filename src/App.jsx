@@ -19,6 +19,186 @@ const EQUIPMENT_DESCRIPTION = `
 
 const FOCUS_OPTIONS = ["Full Body", "Upper Body", "Lower Body", "Core", "Push", "Pull", "Legs"];
 
+// ── Progressive Overload Engine ──────────────────────────────────────────────
+// Achievable BARBELL totals from a 45 lb bar + plates (2×35, 2×15, 2×10).
+// Per-side combos from {35,15,10}: 0,10,15,25,35,45,50,60 → totals below.
+const BARBELL_LADDER = [45, 65, 75, 95, 115, 135, 145, 165];
+
+// Bowflex SelectTech DUMBBELL increments (per dumbbell), default = 552 model.
+// If you own the 1090, swap to: [10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90]
+const DUMBBELL_LADDER = [5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, 30, 35, 40, 45, 50, 52.5];
+
+// Generic fallback ladder for cable/other loaded movements (5 lb steps).
+const GENERIC_LADDER = Array.from({ length: 40 }, (_, i) => 5 + i * 5); // 5..200
+
+function ladderFor(equipment) {
+  switch ((equipment || "").toLowerCase()) {
+    case "barbell": return BARBELL_LADDER;
+    case "dumbbell": return DUMBBELL_LADDER;
+    case "cable":
+    case "other": return GENERIC_LADDER;
+    default: return null; // bodyweight → no external load
+  }
+}
+
+// Nearest achievable load at or below a target (so we never over-prescribe).
+function snapWeight(ladder, target) {
+  if (!ladder || target == null) return null;
+  let best = ladder[0];
+  for (const w of ladder) { if (w <= target) best = w; else break; }
+  return best;
+}
+
+// Next step up the ladder (one increment heavier), capped at the top.
+function nextWeight(ladder, current) {
+  if (!ladder) return null;
+  for (const w of ladder) { if (w > current) return w; }
+  return ladder[ladder.length - 1]; // already at max
+}
+
+// One step down (for deloads), floored at the bottom.
+function prevWeight(ladder, current) {
+  if (!ladder) return null;
+  let prev = ladder[0];
+  for (const w of ladder) { if (w < current) prev = w; else break; }
+  return prev;
+}
+
+// Human-readable barbell plate breakdown, e.g. 115 → "45 bar + 35/side".
+function barbellPlateLabel(total) {
+  const perSide = (total - 45) / 2;
+  if (perSide <= 0) return "45 lb bar (empty)";
+  const plates = [35, 15, 10];
+  const used = [];
+  let rem = perSide;
+  for (const p of plates) { if (rem >= p) { used.push(p); rem -= p; } }
+  return `45 bar + ${used.join("+")}/side`;
+}
+
+function weightLabel(equipment, weight) {
+  if (weight == null) return "Bodyweight";
+  const eq = (equipment || "").toLowerCase();
+  if (eq === "barbell") return `${weight} lbs · ${barbellPlateLabel(weight)}`;
+  if (eq === "dumbbell") return `${weight} lbs each dumbbell`;
+  if (eq === "cable") return `${weight} lbs on the stack`;
+  return `${weight} lbs`;
+}
+
+// Normalize an exercise name so "Barbell Back Squat" == "barbell back squat".
+function normalizeName(name) {
+  return (name || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+}
+
+// Parse a reps string like "8-10" or "12" into { low, high }.
+function parseRepRange(reps) {
+  if (typeof reps === "number") return { low: reps, high: reps };
+  const m = String(reps || "").match(/(\d+)\s*[-–]\s*(\d+)/);
+  if (m) return { low: +m[1], high: +m[2] };
+  const single = String(reps || "").match(/(\d+)/);
+  if (single) return { low: +single[1], high: +single[1] };
+  return { low: 8, high: 12 };
+}
+
+// From a completed exercise's log, derive what actually happened.
+function summarizePerformance(logEntries, repHigh) {
+  const done = logEntries.filter(e => e.done);
+  if (done.length === 0) return { completedAllSets: false, hitTopOfRange: false, workingWeight: null };
+  const completedAllSets = done.length === logEntries.length;
+  const weights = done.map(e => Number(e.weight)).filter(w => !isNaN(w) && w > 0);
+  const workingWeight = weights.length ? Math.max(...weights) : null;
+  const reps = done.map(e => Number(e.reps)).filter(r => !isNaN(r) && r > 0);
+  const hitTopOfRange = reps.length === done.length && reps.every(r => r >= repHigh);
+  return { completedAllSets, hitTopOfRange, workingWeight };
+}
+
+// Given a ledger entry, produce the prescription the user should aim for today.
+// Returns { weight, label, note } — weight is code-authoritative (snapped).
+function prescribe(entry) {
+  if (!entry) return null;
+  const ladder = ladderFor(entry.equipment);
+  if (!ladder) {
+    // Bodyweight: progress reps, not load.
+    return {
+      weight: null,
+      label: "Bodyweight",
+      note: entry.sessions > 0
+        ? `Aim for ${entry.repHigh} reps per set`
+        : "New — establish your baseline reps",
+    };
+  }
+  const weight = snapWeight(ladder, entry.currentWeight);
+  let note;
+  if (entry.sessions === 0) {
+    note = "New — establish your baseline";
+  } else if (entry.lastAction === "increase") {
+    note = `↑ Increased from ${entry.previousWeight} lbs — new target`;
+  } else if (entry.lastAction === "deload") {
+    note = `↓ Deloaded from ${entry.previousWeight} lbs — rebuild`;
+  } else {
+    note = `Repeat ${weight} lbs — aim for ${entry.repHigh} reps to progress`;
+  }
+  return { weight, label: weightLabel(entry.equipment, weight), note };
+}
+
+// Apply double-progression rules to one exercise after a completed workout.
+// Mutates and returns an updated ledger entry.
+function advanceLedgerEntry(prev, perf, repRange, equipment) {
+  const ladder = ladderFor(equipment);
+  const base = prev || {
+    equipment,
+    repLow: repRange.low,
+    repHigh: repRange.high,
+    currentWeight: ladder ? snapWeight(ladder, perf.workingWeight ?? ladder[0]) : null,
+    previousWeight: null,
+    sessions: 0,
+    consecutiveFailures: 0,
+    lastAction: "baseline",
+  };
+
+  // Anchor current weight to what they actually lifted, if logged.
+  let current = base.currentWeight;
+  if (ladder && perf.workingWeight != null) {
+    current = snapWeight(ladder, perf.workingWeight);
+  }
+
+  let next = { ...base, equipment, repLow: repRange.low, repHigh: repRange.high };
+  next.sessions = base.sessions + 1;
+  next.previousWeight = current;
+
+  if (!ladder) {
+    // Bodyweight progression is rep-based; just record the session.
+    next.currentWeight = null;
+    next.lastAction = perf.hitTopOfRange ? "increase" : "repeat";
+    next.consecutiveFailures = perf.completedAllSets ? 0 : base.consecutiveFailures + 1;
+    return next;
+  }
+
+  if (perf.completedAllSets && perf.hitTopOfRange) {
+    // Earned the jump: one increment up, reset rep target to bottom of range.
+    next.currentWeight = nextWeight(ladder, current);
+    next.lastAction = next.currentWeight > current ? "increase" : "repeat";
+    next.consecutiveFailures = 0;
+  } else if (perf.completedAllSets) {
+    // Finished all sets but not at the top — repeat, chase more reps.
+    next.currentWeight = current;
+    next.lastAction = "repeat";
+    next.consecutiveFailures = 0;
+  } else {
+    // Missed sets — count a failure; deload after two in a row.
+    const fails = base.consecutiveFailures + 1;
+    if (fails >= 2) {
+      next.currentWeight = prevWeight(ladder, current);
+      next.lastAction = "deload";
+      next.consecutiveFailures = 0;
+    } else {
+      next.currentWeight = current;
+      next.lastAction = "repeat";
+      next.consecutiveFailures = fails;
+    }
+  }
+  return next;
+}
+
 // ── localStorage helpers ─────────────────────────────────────────────────────
 const LS_KEYS = {
   exercises: "yw_exercises",
@@ -30,6 +210,7 @@ const LS_KEYS = {
   history: "yw_history",
   routineMeta: "yw_routineMeta",
   sectionChecks: "yw_sectionChecks",
+  ledger: "yw_ledger",
 };
 
 function lsGet(key, fallback) {
@@ -54,6 +235,12 @@ function formatDate(iso) {
       weekday: "short", month: "short", day: "numeric",
     }) + " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   } catch { return iso; }
+}
+
+function dayOfWeekFromIso(iso) {
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { weekday: "long" });
+  } catch { return ""; }
 }
 
 // ── JSON parsing helpers ─────────────────────────────────────────────────────
@@ -96,6 +283,73 @@ function parseRoutine(text) {
   return parseObject(text);
 }
 
+// Build the text block that teaches the AI today's progression targets.
+function buildProgressionBriefing(ledger, history, focus) {
+  const entries = Object.values(ledger || {});
+  let out = "";
+
+  if (entries.length > 0) {
+    out += "\nPROGRESSION LEDGER — these are tracked lifts. When one fits today's focus, REUSE ITS EXACT NAME so progressive overload continues. Do NOT set their weight (the app computes it):\n";
+    // Show the most relevant / recently trained first, cap at 12 lines.
+    const sorted = entries.sort((a, b) => (b.sessions || 0) - (a.sessions || 0)).slice(0, 12);
+    for (const e of sorted) {
+      const load = ladderFor(e.equipment)
+        ? `${snapWeight(ladderFor(e.equipment), e.currentWeight)} lbs`
+        : "bodyweight";
+      out += `- "${e.name}" (${e.equipment}): current ${load}, target reps ${e.repLow}-${e.repHigh}\n`;
+    }
+  }
+
+  if (history && history.length > 0) {
+    out += "\nRECENT SESSIONS (avoid hammering the same muscles two days running):\n";
+    for (const rec of history.slice(0, 3)) {
+      const names = rec.exercises.map(x => x.name).join(", ");
+      out += `- ${rec.dayOfWeek || ""} (${rec.focus}): ${names}\n`;
+    }
+  }
+
+  return out;
+}
+
+// After the AI returns exercises, attach code-authoritative prescriptions.
+// Tracked lifts get weight from the ledger; new lifts seed from the AI's hint.
+function applyPrescriptions(rawExercises, ledger) {
+  return rawExercises.map((e, i) => {
+    const key = normalizeName(e.name);
+    const known = ledger[key];
+    const equipment = (e.equipment || known?.equipment || "other").toLowerCase();
+    const range = parseRepRange(e.reps);
+
+    let rx;
+    if (known) {
+      rx = prescribe({ ...known, equipment, repLow: range.low, repHigh: range.high });
+    } else {
+      // New exercise: seed weight from the AI's numeric hint, snapped to a ladder.
+      const ladder = ladderFor(equipment);
+      const hinted = Number(e.start_weight);
+      const seed = ladder
+        ? snapWeight(ladder, !isNaN(hinted) && hinted > 0 ? hinted : ladder[0])
+        : null;
+      rx = {
+        weight: seed,
+        label: weightLabel(equipment, seed),
+        note: "New — establish your baseline",
+      };
+    }
+
+    return {
+      ...e,
+      id: `ex-${Date.now()}-${i}`,
+      equipment,
+      reps: e.reps,
+      prescribedWeight: rx.weight,
+      prescribedLabel: rx.label,
+      progressionNote: rx.note,
+      tracked: !!known,
+    };
+  });
+}
+
 // ── Root component ───────────────────────────────────────────────────────────
 export default function App() {
   const [screen, setScreen]             = useState(() => lsGet(LS_KEYS.screen, "setup"));
@@ -106,6 +360,7 @@ export default function App() {
   const [routineMeta, setRoutineMeta]   = useState(() => lsGet(LS_KEYS.routineMeta, null));
   const [sectionChecks, setSectionChecks] = useState(() => lsGet(LS_KEYS.sectionChecks, {}));
   const [history, setHistory]           = useState(() => lsGet(LS_KEYS.history, []));
+  const [ledger, setLedger]             = useState(() => lsGet(LS_KEYS.ledger, {}));
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState(null);
   const [swappingIndex, setSwappingIndex] = useState(null);
@@ -116,6 +371,7 @@ export default function App() {
   useEffect(() => { lsSet(LS_KEYS.exercises, exercises); }, [exercises]);
   useEffect(() => { lsSet(LS_KEYS.logs, logs); }, [logs]);
   useEffect(() => { lsSet(LS_KEYS.completedSets, completedSets); }, [completedSets]);
+  useEffect(() => { lsSet(LS_KEYS.ledger, ledger); }, [ledger]);
   useEffect(() => { lsSet(LS_KEYS.routineMeta, routineMeta); }, [routineMeta]);
   useEffect(() => { lsSet(LS_KEYS.sectionChecks, sectionChecks); }, [sectionChecks]);
   useEffect(() => { lsSet(LS_KEYS.history, history); }, [history]);
@@ -148,33 +404,40 @@ export default function App() {
   const generateRoutine = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const prompt = `You are a certified personal trainer. Build a complete daily workout session using ONLY this equipment:
+    const briefing = buildProgressionBriefing(ledger, history, focus);
+    const prompt = `You are a certified strength and conditioning coach running a progressive-overload program. Build today's complete workout session using ONLY this equipment:
 ${EQUIPMENT_DESCRIPTION}
 
 Focus: ${focus}.
+${briefing}
+TRAINING PHILOSOPHY — every routine must reflect ALL of these together:
+- Functional strength: compound, real-world movement patterns (push, pull, hinge, squat, carry, rotate), progressed over time.
+- Mobility & flexibility: dynamic joint mobility in the warm-up and meaningful long-hold static stretching in the cool-down; favor full-range main exercises.
+- Cardiovascular endurance: treadmill in the warm-up and cool-down, plus at least one conditioning / higher-rep element among the main exercises when it fits the focus.
 
-The session MUST have three parts:
-1. A warm-up that includes light cardio (use the treadmill) AND dynamic stretching.
-2. Exactly 6 main strength/functional exercises. For any barbell exercise, specify the exact plate loading (e.g. "45 lb bar + 35 lb each side = 115 lbs total"). For dumbbell exercises, suggest a starting dumbbell weight in lbs.
-3. A cool-down that includes light treadmill walking AND static stretching.
+PROGRESSION RULES:
+- Prefer reusing tracked lifts from the PROGRESSION LEDGER that fit today's focus, using their EXACT names, so the app can apply progressive overload. Keep their rep ranges stable session to session.
+- You may add new exercises for variety, balance, mobility, or conditioning.
+- IMPORTANT: do NOT prescribe specific weights — the app calculates all loads. For each MAIN exercise, set "equipment" to one of: "barbell", "dumbbell", "cable", "bodyweight", or "other". For brand-new loaded exercises only, you may include a rough "start_weight" number in lbs as a starting hint.
 
-Also estimate the total time in minutes to complete the entire session (warm-up + main work + cool-down), accounting for sets, rest, and transitions.
+The session MUST have three parts: warm-up (treadmill cardio + dynamic mobility), exactly 6 main exercises, and cool-down (treadmill walk + static stretching).
+Also estimate total time in minutes (warm-up + main work + cool-down) accounting for sets, rest, and transitions.
 
 Respond ONLY with a JSON object (no markdown, no extra text) in EXACTLY this shape:
 {
   "estimated_minutes": 55,
   "warmup": {
-    "title": "Warm-Up & Dynamic Stretching",
+    "title": "Warm-Up & Dynamic Mobility",
     "duration": "6 min",
-    "activities": ["5 min treadmill brisk walk or light jog", "Arm circles, 30 sec", "Leg swings, 10 each side", "Bodyweight squats, 10 reps"]
+    "activities": ["5 min treadmill brisk walk or light jog", "Leg swings, 10 each side", "World's greatest stretch, 5 each side"]
   },
   "exercises": [
-    {"name":"Exercise Name","sets":3,"reps":"8-10","weight_note":"Specific weight suggestion","muscles":"Quads, Glutes","description":"Brief technique tip."}
+    {"name":"Barbell Back Squat","sets":3,"reps":"8-12","muscles":"Quads, Glutes","equipment":"barbell","description":"Full-depth squat, knees tracking toes.","start_weight":95}
   ],
   "cooldown": {
     "title": "Cool-Down & Static Stretching",
     "duration": "6 min",
-    "activities": ["3 min treadmill walk to lower heart rate", "Hamstring stretch, 30 sec each", "Chest doorway stretch, 30 sec"]
+    "activities": ["3 min treadmill walk", "Hamstring stretch, 30 sec each", "Hip flexor stretch, 30 sec each"]
   }
 }
 Make everything practical and well-balanced for this exact equipment and focus.`;
@@ -183,8 +446,8 @@ Make everything practical and well-balanced for this exact equipment and focus.`
       const text = await callAI(prompt);
       const routine = parseRoutine(text);
       if (routine && Array.isArray(routine.exercises) && routine.exercises.length > 0) {
-        const withIds = routine.exercises.map((e, i) => ({ ...e, id: `ex-${Date.now()}-${i}` }));
-        setExercises(withIds);
+        const withRx = applyPrescriptions(routine.exercises, ledger);
+        setExercises(withRx);
         setRoutineMeta({
           estimatedMinutes: routine.estimated_minutes ?? null,
           warmup: routine.warmup ?? null,
@@ -201,7 +464,7 @@ Make everything practical and well-balanced for this exact equipment and focus.`
       setError(e.message || "Something went wrong.");
     }
     setLoading(false);
-  }, [focus, callAI]);
+  }, [focus, callAI, ledger, history]);
 
   // ── Swap a single exercise ────────────────────────────────────────────────
   const handleSwap = useCallback(async (index) => {
@@ -209,22 +472,23 @@ Make everything practical and well-balanced for this exact equipment and focus.`
     setError(null);
     const existing = exercises.map(e => e.name).join(", ");
     const toReplace = exercises[index]?.name;
-    const prompt = `You are a certified personal trainer. The user has:
+    const prompt = `You are a strength coach. The user has:
 ${EQUIPMENT_DESCRIPTION}
 
 Their current routine is: ${existing}.
-Replace "${toReplace}" with a DIFFERENT functional exercise using only the equipment listed. Keep the focus: ${focus}.
-Barbell weight suggestions must account for the bar (45 lbs) plus available plates.
+Replace "${toReplace}" with a DIFFERENT functional, full-range exercise using only the equipment listed. Keep the focus: ${focus}.
+Do NOT prescribe a weight — the app computes loads. Set "equipment" to one of: "barbell", "dumbbell", "cable", "bodyweight", or "other". You may include a rough "start_weight" number in lbs as a hint for loaded movements.
 Respond ONLY with a single JSON object (no markdown, no extra text):
-{"name":"Exercise Name","sets":3,"reps":"8-10","weight_note":"e.g. Barbell: 45+35 each side = 115 lbs total","muscles":"Quads, Glutes","description":"Brief technique tip."}`;
+{"name":"Exercise Name","sets":3,"reps":"8-12","muscles":"Quads, Glutes","equipment":"barbell","description":"Brief technique tip.","start_weight":95}`;
 
     try {
       const text = await callAI(prompt);
       const obj = parseObject(text);
       if (obj && obj.name) {
         const oldId = exercises[index]?.id;
+        const [prescribed] = applyPrescriptions([obj], ledger);
         const updated = [...exercises];
-        updated[index] = { ...obj, id: `ex-${Date.now()}` };
+        updated[index] = prescribed;
         setExercises(updated);
         setLogs(prev => { const n = { ...prev }; delete n[oldId]; return n; });
         setCompletedSets(prev => {
@@ -239,7 +503,7 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
       setError(e.message || "Swap failed.");
     }
     setSwappingIndex(null);
-  }, [exercises, focus, callAI]);
+  }, [exercises, focus, callAI, ledger]);
 
   // ── Log helpers ───────────────────────────────────────────────────────────
   const getLog = (exerciseId, sets) =>
@@ -284,12 +548,14 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
   }, 0);
   const progress = totalSets > 0 ? Math.round((totalSetsCompleted / totalSets) * 100) : 0;
 
-  // ── Save the finished workout as a record ─────────────────────────────────
+  // ── Save the finished workout as a record + advance the ledger ────────────
   const completeWorkout = useCallback(() => {
     if (exercises.length === 0) return;
+    const now = new Date();
     const record = {
       id: `rec-${Date.now()}`,
-      date: new Date().toISOString(),
+      date: now.toISOString(),
+      dayOfWeek: now.toLocaleDateString(undefined, { weekday: "long" }),
       focus,
       totalSets,
       completedSets: totalSetsCompleted,
@@ -301,7 +567,9 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
         muscles: ex.muscles,
         reps: ex.reps,
         sets: ex.sets,
-        weight_note: ex.weight_note,
+        equipment: ex.equipment,
+        prescribedLabel: ex.prescribedLabel,
+        progressionNote: ex.progressionNote,
         description: ex.description,
         log: getLog(ex.id, ex.sets).slice(0, ex.sets).map((entry, i) => ({
           set: i + 1,
@@ -311,8 +579,32 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
         })),
       })),
     };
+
+    // Advance the progression ledger from this session's logged performance.
+    setLedger(prev => {
+      const next = { ...prev };
+      for (const ex of exercises) {
+        const key = normalizeName(ex.name);
+        const range = parseRepRange(ex.reps);
+        const logEntries = getLog(ex.id, ex.sets).slice(0, ex.sets).map((entry, i) => ({
+          weight: entry.weight,
+          reps: entry.reps,
+          done: !!completedSets[`${ex.id}-${i}`],
+        }));
+        const perf = summarizePerformance(logEntries, range.high);
+        // Only progress exercises the user actually engaged with this session.
+        const touched = logEntries.some(e => e.done || (e.weight !== "" && e.weight != null));
+        if (!touched && !next[key]) continue;
+        next[key] = {
+          ...advanceLedgerEntry(next[key], perf, range, ex.equipment || "other"),
+          name: ex.name, // preserve display casing
+          lastDate: now.toISOString(),
+        };
+      }
+      return next;
+    });
+
     setHistory(prev => [record, ...prev]);
-    // Clear the active session and jump to history
     setLogs({});
     setCompletedSets({});
     setSectionChecks({});
@@ -320,16 +612,17 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
   }, [exercises, focus, totalSets, totalSetsCompleted, completedSets, logs, routineMeta]);
 
   // ── Repeat a saved workout as a fresh active routine ──────────────────────
+  // Re-applies CURRENT ledger prescriptions so repeating reflects progression.
   const repeatWorkout = useCallback((record) => {
-    const fresh = record.exercises.map((ex, i) => ({
-      id: `ex-${Date.now()}-${i}`,
+    const raw = record.exercises.map(ex => ({
       name: ex.name,
       muscles: ex.muscles,
       reps: ex.reps,
       sets: ex.sets,
-      weight_note: ex.weight_note,
+      equipment: ex.equipment || "other",
       description: ex.description,
     }));
+    const fresh = applyPrescriptions(raw, ledger);
     setFocus(record.focus);
     setExercises(fresh);
     setRoutineMeta({
@@ -341,10 +634,27 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     setCompletedSets({});
     setSectionChecks({});
     setScreen("routine");
-  }, []);
+  }, [ledger]);
 
   const deleteRecord = useCallback((id) => {
     setHistory(prev => prev.filter(r => r.id !== id));
+  }, []);
+
+  // ── Wipe everything (testing reset) ───────────────────────────────────────
+  const resetAllData = useCallback(() => {
+    Object.values(LS_KEYS).forEach(k => {
+      try { localStorage.removeItem(k); } catch {}
+    });
+    setExercises([]);
+    setLogs({});
+    setCompletedSets({});
+    setRoutineMeta(null);
+    setSectionChecks({});
+    setHistory([]);
+    setLedger({});
+    setFocus("Full Body");
+    setError(null);
+    setScreen("setup");
   }, []);
 
   return (
@@ -358,6 +668,9 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
           onResume={() => setScreen("routine")}
           historyCount={history.length}
           onViewHistory={() => setScreen("history")}
+          onResetAll={resetAllData}
+          ledgerCount={Object.keys(ledger).length}
+          onViewProgress={() => setScreen("progress")}
         />
       )}
       {screen === "routine" && (
@@ -382,12 +695,19 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
           onDelete={deleteRecord}
         />
       )}
+      {screen === "progress" && (
+        <ProgressScreen
+          ledger={ledger}
+          onBack={() => setScreen("setup")}
+        />
+      )}
     </div>
   );
 }
 
 // ── Setup Screen ─────────────────────────────────────────────────────────────
-function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingRoutine, onResume, historyCount, onViewHistory }) {
+function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingRoutine, onResume, historyCount, onViewHistory, onResetAll, ledgerCount, onViewProgress }) {
+  const [confirmReset, setConfirmReset] = useState(false);
   return (
     <div style={s.container}>
       <div style={s.headerRow}>
@@ -470,7 +790,35 @@ function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingR
         </button>
       )}
 
+      {ledgerCount > 0 && (
+        <button onClick={onViewProgress} style={s.ghostBtn}>
+          📈 Progression Tracker ({ledgerCount} {ledgerCount === 1 ? "lift" : "lifts"})
+        </button>
+      )}
+
       <p style={s.hint}>{focus} focus · exercises tailored to your rack & dumbbells</p>
+
+      <div style={s.resetZone}>
+        {confirmReset ? (
+          <div style={s.resetConfirm}>
+            <span style={s.resetConfirmText}>
+              Erase all data, including saved workouts? This can't be undone.
+            </span>
+            <div style={s.resetConfirmBtns}>
+              <button onClick={() => { onResetAll(); setConfirmReset(false); }} style={s.resetYes}>
+                Erase everything
+              </button>
+              <button onClick={() => setConfirmReset(false)} style={s.resetNo}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmReset(true)} style={s.resetLink}>
+            Reset all data
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -555,9 +903,15 @@ function RoutineScreen({
                 <div style={s.cardLeft}>
                   <span style={s.cardNum}>{String(idx + 1).padStart(2, "0")}</span>
                   <div>
-                    <div style={s.cardName}>{ex.name}</div>
+                    <div style={s.cardName}>
+                      {ex.tracked && <span style={s.trackedDot} title="Tracked for progression">●</span>}
+                      {ex.name}
+                    </div>
                     <div style={s.cardMeta}>
-                      {ex.muscles} · {ex.sets} sets × {ex.reps} reps
+                      {ex.muscles} · {ex.sets} × {ex.reps}
+                      {ex.prescribedWeight != null && (
+                        <span style={s.rxInline}> · {ex.prescribedWeight} lbs</span>
+                      )}
                       {setsCompleted > 0 && (
                         <span style={s.setsDoneTag}> · {setsCompleted}/{ex.sets} done</span>
                       )}
@@ -576,8 +930,16 @@ function RoutineScreen({
               {isExpanded && (
                 <div style={s.cardBody}>
                   <p style={s.cardDesc}>{ex.description}</p>
-                  <p style={s.weightNote}>💡 {ex.weight_note}</p>
 
+                  <div style={s.rxCard}>
+                    <div style={s.rxRow}>
+                      <span style={s.rxLabel}>TARGET</span>
+                      <span style={s.rxValue}>{ex.prescribedLabel || "Bodyweight"}</span>
+                    </div>
+                    {ex.progressionNote && (
+                      <div style={s.rxNote}>{ex.progressionNote}</div>
+                    )}
+                  </div>
                   <div style={s.setTable}>
                     <div style={s.setTableHeader}>
                       <span>SET</span>
@@ -592,7 +954,8 @@ function RoutineScreen({
                       return (
                         <div key={i} style={{ ...s.setRow, background: done ? "#0d2b1a" : "transparent" }}>
                           <span style={s.setNum}>{i + 1}</span>
-                          <input type="number" min="0" placeholder="lbs"
+                          <input type="number" min="0"
+                            placeholder={ex.prescribedWeight != null ? String(ex.prescribedWeight) : "lbs"}
                             value={entry.weight}
                             onChange={e => updateLog(ex.id, i, "weight", e.target.value)}
                             style={s.setInput} />
@@ -717,12 +1080,16 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
         history.map(rec => {
           const isExpanded = expandedId === rec.id;
           const pct = rec.totalSets > 0 ? Math.round((rec.completedSets / rec.totalSets) * 100) : 0;
+          const dow = rec.dayOfWeek || dayOfWeekFromIso(rec.date);
           return (
             <div key={rec.id} style={s.card}>
               <div style={s.cardHeader} onClick={() => setExpandedId(isExpanded ? null : rec.id)}>
                 <div style={s.cardLeft}>
                   <div>
-                    <div style={s.cardName}>{rec.focus}</div>
+                    <div style={s.cardName}>
+                      {dow && <span style={s.recDow}>{dow}</span>}
+                      {rec.focus}
+                    </div>
                     <div style={s.cardMeta}>
                       {formatDate(rec.date)} · {rec.exercises.length} exercises · {rec.completedSets}/{rec.totalSets} sets ({pct}%)
                       {rec.estimatedMinutes != null && ` · ~${rec.estimatedMinutes} min`}
@@ -784,6 +1151,68 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
                   </div>
                 </div>
               )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+// ── Progress Screen — the progression ledger made visible ─────────────────────
+function ProgressScreen({ ledger, onBack }) {
+  const entries = Object.values(ledger || {}).sort((a, b) => (b.sessions || 0) - (a.sessions || 0));
+
+  const trendIcon = (action) => {
+    if (action === "increase") return { sym: "↑", color: "#22c55e" };
+    if (action === "deload") return { sym: "↓", color: "#f87171" };
+    return { sym: "→", color: "#888" };
+  };
+
+  return (
+    <div style={s.container}>
+      <div style={s.routineHeader}>
+        <button onClick={onBack} style={s.backBtn}>← Back</button>
+        <div style={{ textAlign: "center" }}>
+          <h1 style={s.routineTitle}>Progression</h1>
+          <span style={s.focusTag}>{entries.length} tracked lifts</span>
+        </div>
+        <div style={{ minWidth: 60 }} />
+      </div>
+
+      <p style={s.progressIntro}>
+        Loads here are calculated from your logged performance and snapped to weights
+        you can actually build. Hit the top of a rep range on every set and the weight
+        goes up next session.
+      </p>
+
+      {entries.length === 0 ? (
+        <div style={s.emptyState}>
+          <div style={s.emptyIcon}>📈</div>
+          <p style={s.emptyTitle}>No tracked lifts yet</p>
+          <p style={s.emptyText}>
+            Complete a workout and the exercises you log will start being tracked here.
+          </p>
+        </div>
+      ) : (
+        entries.map((e, i) => {
+          const ladder = ladderFor(e.equipment);
+          const weight = ladder ? snapWeight(ladder, e.currentWeight) : null;
+          const t = trendIcon(e.lastAction);
+          return (
+            <div key={i} style={s.ledgerCard}>
+              <div style={s.ledgerTop}>
+                <div style={s.ledgerName}>{e.name}</div>
+                <div style={{ ...s.ledgerTrend, color: t.color }}>{t.sym}</div>
+              </div>
+              <div style={s.ledgerMeta}>
+                <span style={s.ledgerEquip}>{e.equipment}</span>
+                <span style={s.ledgerReps}>target {e.repLow}-{e.repHigh} reps</span>
+                <span style={s.ledgerSessions}>{e.sessions} session{e.sessions === 1 ? "" : "s"}</span>
+              </div>
+              <div style={s.ledgerWeight}>
+                {weight != null ? weightLabel(e.equipment, weight) : "Bodyweight — progress by reps"}
+              </div>
             </div>
           );
         })
@@ -926,6 +1355,16 @@ const s = {
     fontSize: 13, color: "#a3e635", background: "#0d1f00",
     padding: "8px 12px", borderRadius: 8, marginBottom: 16,
   },
+  trackedDot: { color: "#a3e635", fontSize: 10, marginRight: 6, verticalAlign: "middle" },
+  rxInline: { color: "#a3e635", fontWeight: 700 },
+  rxCard: {
+    background: "#0d1f00", border: "1px solid #1d3a08", borderRadius: 10,
+    padding: "12px 14px", marginBottom: 16,
+  },
+  rxRow: { display: "flex", alignItems: "baseline", gap: 10 },
+  rxLabel: { fontSize: 10, fontWeight: 800, letterSpacing: "1.5px", color: "#6a8a3a" },
+  rxValue: { fontSize: 15, fontWeight: 700, color: "#a3e635" },
+  rxNote: { fontSize: 12, color: "#7fae5a", marginTop: 6 },
   setTable: { borderRadius: 8, overflow: "hidden", border: "1px solid #1e1e1e" },
   setTableHeader: {
     display: "grid", gridTemplateColumns: "0.5fr 2fr 1.5fr 1fr",
@@ -957,6 +1396,56 @@ const s = {
     fontWeight: 800, cursor: "pointer", marginTop: 8,
   },
   completeHint: { textAlign: "center", color: "#555", fontSize: 12, marginTop: 8 },
+
+  // Reset all data
+  resetZone: { marginTop: 32, textAlign: "center" },
+  resetLink: {
+    background: "none", border: "none", color: "#5a4a4a",
+    fontSize: 12, cursor: "pointer", textDecoration: "underline", padding: 8,
+  },
+  resetConfirm: {
+    background: "#1a0d0d", border: "1px solid #3a1a1a", borderRadius: 12, padding: "16px",
+  },
+  resetConfirmText: { fontSize: 13, color: "#c98a8a", display: "block", marginBottom: 12 },
+  resetConfirmBtns: { display: "flex", gap: 8, justifyContent: "center" },
+  resetYes: {
+    background: "#6b1a1a", border: "none", color: "#fca5a5",
+    fontSize: 13, fontWeight: 700, cursor: "pointer", padding: "8px 16px", borderRadius: 8,
+  },
+  resetNo: {
+    background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#888",
+    fontSize: 13, cursor: "pointer", padding: "8px 16px", borderRadius: 8,
+  },
+
+  // Day-of-week badge on history records
+  recDow: {
+    fontSize: 10, fontWeight: 800, letterSpacing: "1px", color: "#a3e635",
+    background: "#182800", border: "1px solid #2d4a0a", borderRadius: 5,
+    padding: "2px 7px", marginRight: 8, textTransform: "uppercase",
+    verticalAlign: "middle",
+  },
+
+  // Progression tracker
+  progressIntro: { fontSize: 13, color: "#777", lineHeight: 1.5, marginBottom: 20 },
+  ledgerCard: {
+    background: "#111", border: "1px solid #1e1e1e", borderRadius: 12,
+    padding: "14px 16px", marginBottom: 10,
+  },
+  ledgerTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  ledgerName: { fontWeight: 700, fontSize: 15, color: "#f0f0f0" },
+  ledgerTrend: { fontSize: 20, fontWeight: 800 },
+  ledgerMeta: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6, marginBottom: 10 },
+  ledgerEquip: {
+    fontSize: 10, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase",
+    color: "#888", background: "#1a1a1a", border: "1px solid #2a2a2a",
+    padding: "2px 7px", borderRadius: 5,
+  },
+  ledgerReps: { fontSize: 12, color: "#666" },
+  ledgerSessions: { fontSize: 12, color: "#666" },
+  ledgerWeight: {
+    fontSize: 14, fontWeight: 700, color: "#a3e635",
+    background: "#0d1f00", padding: "8px 12px", borderRadius: 8,
+  },
 
   // Time estimate banner
   timeBanner: {
