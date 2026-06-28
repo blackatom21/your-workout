@@ -22,7 +22,58 @@ const EQUIPMENT_DESCRIPTION = `
 - Achievable barbell totals (35 lb bar + plates): 35, 55, 65, 85, 105, 125, 135, 155 lbs
 `.trim();
 
-const FOCUS_OPTIONS = ["Full Body", "Upper Body", "Lower Body", "Core", "Push", "Pull", "Legs"];
+// Manual-override focus options (auto-programming is the default path).
+const FOCUS_OPTIONS = ["Push", "Pull", "Legs", "Full Body", "Upper Body", "Lower Body", "Core", "Conditioning"];
+
+// ── Auto-Programming Engine ──────────────────────────────────────────────────
+// Strength emphasis rotates through these for balanced recovery.
+const STRENGTH_ROTATION = ["Push", "Pull", "Legs"];
+// Insert a VO2/endurance day after this many strength sessions in a row.
+const CONDITIONING_EVERY = 3;
+
+function sessionTypeOf(rec) {
+  return rec.sessionType || rec.focus || "Full Body";
+}
+
+// Decide the next appropriate session from completed history.
+// Returns { type, reason }.
+function decideNextSession(history) {
+  const recent = (history || []).slice(0, 8); // newest first
+  if (recent.length === 0) {
+    return { type: "Full Body", reason: "Your first session — a balanced full-body start to set baselines." };
+  }
+  const lastType = sessionTypeOf(recent[0]);
+
+  // How many strength sessions since the last conditioning day?
+  let sinceConditioning = 0;
+  let everConditioned = false;
+  for (const r of recent) {
+    if (sessionTypeOf(r) === "Conditioning") { everConditioned = true; break; }
+    sinceConditioning++;
+  }
+
+  // Schedule a VO2/endurance day when it's been a while (never two in a row).
+  if (lastType !== "Conditioning" &&
+      (sinceConditioning >= CONDITIONING_EVERY || (!everConditioned && recent.length >= 2))) {
+    return {
+      type: "Conditioning",
+      reason: `${sinceConditioning} strength session${sinceConditioning === 1 ? "" : "s"} in a row — time for VO2 max / endurance work to round out the week.`,
+    };
+  }
+
+  // Otherwise pick the least-recently-trained strength split.
+  const lastSeen = {};
+  recent.forEach((r, i) => { const t = sessionTypeOf(r); if (lastSeen[t] === undefined) lastSeen[t] = i; });
+  let pick = STRENGTH_ROTATION[0], best = -1;
+  for (const t of STRENGTH_ROTATION) {
+    const score = lastSeen[t] === undefined ? 999 : lastSeen[t];
+    if (score > best) { best = score; pick = t; }
+  }
+  const reason = lastType === "Conditioning"
+    ? `Back to strength after conditioning — ${pick} is next in your rotation.`
+    : `${pick} hasn't been trained recently — keeps your week balanced.`;
+  return { type: pick, reason };
+}
 
 // ── Progressive Overload Engine ──────────────────────────────────────────────
 // The user's barbell weighs 35 lbs (not the standard 45). All barbell math
@@ -359,6 +410,69 @@ function applyPrescriptions(rawExercises, ledger) {
   });
 }
 
+// Prompt for a strength session of a given split (Push/Pull/Legs/etc.).
+function buildStrengthPrompt(focus, briefing) {
+  return `You are a certified strength and conditioning coach running a progressive-overload program. Build today's complete STRENGTH session using ONLY this equipment:
+${EQUIPMENT_DESCRIPTION}
+
+Today's session type: ${focus}.
+${briefing}
+TRAINING PHILOSOPHY — reflect ALL of these:
+- Functional strength: compound, real-world movement patterns (push, pull, hinge, squat, carry, rotate), progressed over time, appropriate to today's ${focus} emphasis.
+- Mobility & flexibility: dynamic joint mobility in the warm-up and long-hold static stretching in the cool-down; full-range main exercises.
+- Cardiovascular endurance: treadmill in the warm-up and cool-down (today's dedicated conditioning happens on separate days, so keep cardio here light).
+- Equipment variety: make real use of the F22's cable attachments — lat pulldown bar, straight bar, D/stirrup handles, T-bar/landmine handle — plus the landmine and dip bars, not just barbell and dumbbells.
+
+PROGRESSION RULES:
+- Prefer reusing tracked lifts from the PROGRESSION LEDGER that fit today's ${focus} emphasis, using their EXACT names, so the app can apply progressive overload. Keep their rep ranges stable.
+- You may add new exercises for variety, balance, or mobility.
+- Do NOT prescribe weights — the app calculates loads. For each MAIN exercise set "equipment" to one of: "barbell", "dumbbell", "cable", "bodyweight", "other". For brand-new loaded exercises only, include a rough "start_weight" number in lbs.
+
+The session MUST have: warm-up (treadmill cardio + dynamic mobility), exactly 6 main exercises matching the ${focus} emphasis, and cool-down (treadmill walk + static stretching). Estimate total minutes.
+
+Respond ONLY with a JSON object (no markdown) in EXACTLY this shape:
+{
+  "estimated_minutes": 55,
+  "warmup": {"title":"Warm-Up & Dynamic Mobility","duration":"6 min","activities":["5 min treadmill brisk walk","Leg swings, 10 each side","World's greatest stretch, 5 each side"]},
+  "exercises": [
+    {"name":"Barbell Back Squat","sets":3,"reps":"8-12","muscles":"Quads, Glutes","equipment":"barbell","description":"Full-depth, knees tracking toes.","start_weight":95}
+  ],
+  "cooldown": {"title":"Cool-Down & Static Stretching","duration":"6 min","activities":["3 min treadmill walk","Hamstring stretch, 30 sec each","Hip flexor stretch, 30 sec each"]}
+}`;
+}
+
+// Prompt for a dedicated VO2-max / endurance conditioning session.
+function buildConditioningPrompt(lastConditioning) {
+  let progressNote = "";
+  if (lastConditioning && Array.isArray(lastConditioning.exercises)) {
+    const summary = lastConditioning.exercises
+      .map(b => `${b.name}: ${b.rounds || "?"} rounds, work ${b.work || "?"}, rest ${b.rest || "?"}`)
+      .join("; ");
+    progressNote = `\nLAST CONDITIONING SESSION (progress slightly from this — add a round, extend work intervals, or increase pace/incline): ${summary}\n`;
+  }
+  return `You are a certified conditioning coach. Build today's dedicated CARDIOVASCULAR / VO2-MAX session using ONLY this equipment:
+${EQUIPMENT_DESCRIPTION}
+
+This is an ENDURANCE day, not a strength day. The centerpiece is structured cardiovascular work to build VO2 max and aerobic capacity, primarily on the treadmill, optionally mixed with light functional circuit movements for a metabolic effect. Do NOT program heavy strength lifting today.
+${progressNote}
+PRINCIPLES:
+- Include true high-intensity work that pushes VO2 max (e.g. 4×4 min @ RPE 8-9 / ~85-95% max HR with active recovery), OR a tempo/threshold block, OR an interval ladder — pick one well-structured format.
+- Give clear intensity targets (RPE and approximate % max heart rate) and explicit work/rest timing.
+- Keep it time-efficient and appropriate for someone who also strength-trains on other days.
+
+The session MUST have: warm-up (gradual treadmill build + dynamic mobility), 1-3 conditioning blocks, and cool-down (easy treadmill walk + static stretching). Estimate total minutes.
+
+Respond ONLY with a JSON object (no markdown) in EXACTLY this shape:
+{
+  "estimated_minutes": 35,
+  "warmup": {"title":"Warm-Up & Aerobic Prime","duration":"6 min","activities":["5 min treadmill easy-to-moderate build","Leg swings, 10 each side","High knees, 30 sec"]},
+  "conditioning": [
+    {"name":"Treadmill VO2 Intervals (4×4)","format":"intervals","rounds":4,"work":"4 min @ RPE 8-9 (~90% max HR)","rest":"3 min easy walk/jog","description":"Hard enough that talking is difficult during work intervals."}
+  ],
+  "cooldown": {"title":"Cool-Down & Static Stretching","duration":"6 min","activities":["3-5 min treadmill easy walk","Hamstring stretch, 30 sec each","Calf stretch, 30 sec each"]}
+}`;
+}
+
 // ── Root component ───────────────────────────────────────────────────────────
 export default function App() {
   const [screen, setScreen]             = useState(() => lsGet(LS_KEYS.screen, "setup"));
@@ -409,72 +523,72 @@ export default function App() {
     return data.text || "";
   }, []);
 
-  // ── Generate full routine ─────────────────────────────────────────────────
-  const generateRoutine = useCallback(async () => {
+  // Summarize the most recent conditioning session so the AI can progress it.
+  const lastConditioning = history.find(r => sessionTypeOf(r) === "Conditioning");
+
+  // ── Generate the next session (auto-decided type, or a manual override) ────
+  const generateRoutine = useCallback(async (overrideType) => {
+    const sessionType = overrideType || decideNextSession(history).type;
+    setFocus(sessionType);
     setLoading(true);
     setError(null);
-    const briefing = buildProgressionBriefing(ledger, history, focus);
-    const prompt = `You are a certified strength and conditioning coach running a progressive-overload program. Build today's complete workout session using ONLY this equipment:
-${EQUIPMENT_DESCRIPTION}
 
-Focus: ${focus}.
-${briefing}
-TRAINING PHILOSOPHY — every routine must reflect ALL of these together:
-- Functional strength: compound, real-world movement patterns (push, pull, hinge, squat, carry, rotate), progressed over time.
-- Mobility & flexibility: dynamic joint mobility in the warm-up and meaningful long-hold static stretching in the cool-down; favor full-range main exercises.
-- Cardiovascular endurance: treadmill in the warm-up and cool-down, plus at least one conditioning / higher-rep element among the main exercises when it fits the focus.
-- Equipment variety: make real use of the F22's cable attachments across sessions — lat pulldown bar, straight bar, D/stirrup handles, T-bar/landmine handle — and the landmine and dip bars, not just the barbell and dumbbells. Pick the attachment that best fits each movement.
-
-PROGRESSION RULES:
-- Prefer reusing tracked lifts from the PROGRESSION LEDGER that fit today's focus, using their EXACT names, so the app can apply progressive overload. Keep their rep ranges stable session to session.
-- You may add new exercises for variety, balance, mobility, or conditioning.
-- IMPORTANT: do NOT prescribe specific weights — the app calculates all loads. For each MAIN exercise, set "equipment" to one of: "barbell", "dumbbell", "cable", "bodyweight", or "other". For brand-new loaded exercises only, you may include a rough "start_weight" number in lbs as a starting hint.
-
-The session MUST have three parts: warm-up (treadmill cardio + dynamic mobility), exactly 6 main exercises, and cool-down (treadmill walk + static stretching).
-Also estimate total time in minutes (warm-up + main work + cool-down) accounting for sets, rest, and transitions.
-
-Respond ONLY with a JSON object (no markdown, no extra text) in EXACTLY this shape:
-{
-  "estimated_minutes": 55,
-  "warmup": {
-    "title": "Warm-Up & Dynamic Mobility",
-    "duration": "6 min",
-    "activities": ["5 min treadmill brisk walk or light jog", "Leg swings, 10 each side", "World's greatest stretch, 5 each side"]
-  },
-  "exercises": [
-    {"name":"Barbell Back Squat","sets":3,"reps":"8-12","muscles":"Quads, Glutes","equipment":"barbell","description":"Full-depth squat, knees tracking toes.","start_weight":95}
-  ],
-  "cooldown": {
-    "title": "Cool-Down & Static Stretching",
-    "duration": "6 min",
-    "activities": ["3 min treadmill walk", "Hamstring stretch, 30 sec each", "Hip flexor stretch, 30 sec each"]
-  }
-}
-Make everything practical and well-balanced for this exact equipment and focus.`;
+    const isConditioning = sessionType === "Conditioning";
+    const prompt = isConditioning
+      ? buildConditioningPrompt(lastConditioning)
+      : buildStrengthPrompt(sessionType, buildProgressionBriefing(ledger, history, sessionType));
 
     try {
       const text = await callAI(prompt);
       const routine = parseRoutine(text);
-      if (routine && Array.isArray(routine.exercises) && routine.exercises.length > 0) {
-        const withRx = applyPrescriptions(routine.exercises, ledger);
-        setExercises(withRx);
-        setRoutineMeta({
-          estimatedMinutes: routine.estimated_minutes ?? null,
-          warmup: routine.warmup ?? null,
-          cooldown: routine.cooldown ?? null,
-        });
-        setLogs({});
-        setCompletedSets({});
-        setSectionChecks({});
-        setScreen("routine");
+
+      if (isConditioning) {
+        const blocks = Array.isArray(routine?.conditioning) ? routine.conditioning : null;
+        if (blocks && blocks.length > 0) {
+          const withIds = blocks.map((b, i) => ({
+            ...b,
+            id: `cond-${Date.now()}-${i}`,
+            kind: "conditioning",
+            rounds: Math.max(1, Number(b.rounds) || 1),
+          }));
+          setExercises(withIds);
+          setRoutineMeta({
+            sessionType,
+            estimatedMinutes: routine.estimated_minutes ?? null,
+            warmup: routine.warmup ?? null,
+            cooldown: routine.cooldown ?? null,
+          });
+          setLogs({});
+          setCompletedSets({});
+          setSectionChecks({});
+          setScreen("routine");
+        } else {
+          setError("Couldn't parse the conditioning session — tap Generate to try again.");
+        }
       } else {
-        setError("Couldn't parse the routine — tap Generate to try again.");
+        if (routine && Array.isArray(routine.exercises) && routine.exercises.length > 0) {
+          const withRx = applyPrescriptions(routine.exercises, ledger)
+            .map(e => ({ ...e, kind: "strength" }));
+          setExercises(withRx);
+          setRoutineMeta({
+            sessionType,
+            estimatedMinutes: routine.estimated_minutes ?? null,
+            warmup: routine.warmup ?? null,
+            cooldown: routine.cooldown ?? null,
+          });
+          setLogs({});
+          setCompletedSets({});
+          setSectionChecks({});
+          setScreen("routine");
+        } else {
+          setError("Couldn't parse the routine — tap Generate to try again.");
+        }
       }
     } catch (e) {
       setError(e.message || "Something went wrong.");
     }
     setLoading(false);
-  }, [focus, callAI, ledger, history]);
+  }, [callAI, ledger, history, lastConditioning]);
 
   // ── Swap a single exercise ────────────────────────────────────────────────
   const handleSwap = useCallback(async (index) => {
@@ -550,10 +664,16 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     setSectionChecks(prev => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
-  // ── Progress ──────────────────────────────────────────────────────────────
-  const totalSets = exercises.reduce((a, ex) => a + ex.sets, 0);
+  // ── Notes for a conditioning block (pace/incline used, how it felt) ───────
+  const updateNotes = useCallback((exerciseId, value) => {
+    setLogs(prev => ({ ...prev, [exerciseId]: { ...(prev[exerciseId] || {}), notes: value } }));
+  }, []);
+
+  // ── Progress (units = strength sets OR conditioning rounds) ───────────────
+  const unitsOf = (ex) => ex.kind === "conditioning" ? (ex.rounds || 1) : (ex.sets || 0);
+  const totalSets = exercises.reduce((a, ex) => a + unitsOf(ex), 0);
   const totalSetsCompleted = exercises.reduce((a, ex) => {
-    for (let i = 0; i < ex.sets; i++) if (completedSets[`${ex.id}-${i}`]) a++;
+    for (let i = 0; i < unitsOf(ex); i++) if (completedSets[`${ex.id}-${i}`]) a++;
     return a;
   }, 0);
   const progress = totalSets > 0 ? Math.round((totalSetsCompleted / totalSets) * 100) : 0;
@@ -562,57 +682,80 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
   const completeWorkout = useCallback(() => {
     if (exercises.length === 0) return;
     const now = new Date();
+    const sessionType = routineMeta?.sessionType || focus;
+    const isConditioning = sessionType === "Conditioning";
+
     const record = {
       id: `rec-${Date.now()}`,
       date: now.toISOString(),
       dayOfWeek: now.toLocaleDateString(undefined, { weekday: "long" }),
-      focus,
+      focus: sessionType,
+      sessionType,
       totalSets,
       completedSets: totalSetsCompleted,
       estimatedMinutes: routineMeta?.estimatedMinutes ?? null,
       warmup: routineMeta?.warmup ?? null,
       cooldown: routineMeta?.cooldown ?? null,
-      exercises: exercises.map(ex => ({
-        name: ex.name,
-        muscles: ex.muscles,
-        reps: ex.reps,
-        sets: ex.sets,
-        equipment: ex.equipment,
-        prescribedLabel: ex.prescribedLabel,
-        progressionNote: ex.progressionNote,
-        description: ex.description,
-        log: getLog(ex.id, ex.sets).slice(0, ex.sets).map((entry, i) => ({
-          set: i + 1,
-          weight: entry.weight ?? "",
-          reps: entry.reps ?? "",
-          done: !!completedSets[`${ex.id}-${i}`],
-        })),
-      })),
+      exercises: exercises.map(ex => {
+        if (ex.kind === "conditioning") {
+          const rounds = ex.rounds || 1;
+          return {
+            kind: "conditioning",
+            name: ex.name,
+            format: ex.format,
+            rounds,
+            work: ex.work,
+            rest: ex.rest,
+            description: ex.description,
+            notes: (logs[ex.id]?.notes) || "",
+            roundsDone: Array.from({ length: rounds }, (_, i) => !!completedSets[`${ex.id}-${i}`]).filter(Boolean).length,
+          };
+        }
+        return {
+          kind: "strength",
+          name: ex.name,
+          muscles: ex.muscles,
+          reps: ex.reps,
+          sets: ex.sets,
+          equipment: ex.equipment,
+          prescribedLabel: ex.prescribedLabel,
+          progressionNote: ex.progressionNote,
+          description: ex.description,
+          log: getLog(ex.id, ex.sets).slice(0, ex.sets).map((entry, i) => ({
+            set: i + 1,
+            weight: entry.weight ?? "",
+            reps: entry.reps ?? "",
+            done: !!completedSets[`${ex.id}-${i}`],
+          })),
+        };
+      }),
     };
 
-    // Advance the progression ledger from this session's logged performance.
-    setLedger(prev => {
-      const next = { ...prev };
-      for (const ex of exercises) {
-        const key = normalizeName(ex.name);
-        const range = parseRepRange(ex.reps);
-        const logEntries = getLog(ex.id, ex.sets).slice(0, ex.sets).map((entry, i) => ({
-          weight: entry.weight,
-          reps: entry.reps,
-          done: !!completedSets[`${ex.id}-${i}`],
-        }));
-        const perf = summarizePerformance(logEntries, range.high);
-        // Only progress exercises the user actually engaged with this session.
-        const touched = logEntries.some(e => e.done || (e.weight !== "" && e.weight != null));
-        if (!touched && !next[key]) continue;
-        next[key] = {
-          ...advanceLedgerEntry(next[key], perf, range, ex.equipment || "other"),
-          name: ex.name, // preserve display casing
-          lastDate: now.toISOString(),
-        };
-      }
-      return next;
-    });
+    // Advance the strength progression ledger (conditioning days skip this).
+    if (!isConditioning) {
+      setLedger(prev => {
+        const next = { ...prev };
+        for (const ex of exercises) {
+          if (ex.kind === "conditioning") continue;
+          const key = normalizeName(ex.name);
+          const range = parseRepRange(ex.reps);
+          const logEntries = getLog(ex.id, ex.sets).slice(0, ex.sets).map((entry, i) => ({
+            weight: entry.weight,
+            reps: entry.reps,
+            done: !!completedSets[`${ex.id}-${i}`],
+          }));
+          const perf = summarizePerformance(logEntries, range.high);
+          const touched = logEntries.some(e => e.done || (e.weight !== "" && e.weight != null));
+          if (!touched && !next[key]) continue;
+          next[key] = {
+            ...advanceLedgerEntry(next[key], perf, range, ex.equipment || "other"),
+            name: ex.name,
+            lastDate: now.toISOString(),
+          };
+        }
+        return next;
+      });
+    }
 
     setHistory(prev => [record, ...prev]);
     setLogs({});
@@ -624,18 +767,35 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
   // ── Repeat a saved workout as a fresh active routine ──────────────────────
   // Re-applies CURRENT ledger prescriptions so repeating reflects progression.
   const repeatWorkout = useCallback((record) => {
-    const raw = record.exercises.map(ex => ({
-      name: ex.name,
-      muscles: ex.muscles,
-      reps: ex.reps,
-      sets: ex.sets,
-      equipment: ex.equipment || "other",
-      description: ex.description,
-    }));
-    const fresh = applyPrescriptions(raw, ledger);
-    setFocus(record.focus);
+    const sessionType = record.sessionType || record.focus || "Full Body";
+    const isConditioning = sessionType === "Conditioning";
+    let fresh;
+    if (isConditioning) {
+      fresh = record.exercises.map((ex, i) => ({
+        id: `cond-${Date.now()}-${i}`,
+        kind: "conditioning",
+        name: ex.name,
+        format: ex.format,
+        rounds: Math.max(1, Number(ex.rounds) || 1),
+        work: ex.work,
+        rest: ex.rest,
+        description: ex.description,
+      }));
+    } else {
+      const raw = record.exercises.map(ex => ({
+        name: ex.name,
+        muscles: ex.muscles,
+        reps: ex.reps,
+        sets: ex.sets,
+        equipment: ex.equipment || "other",
+        description: ex.description,
+      }));
+      fresh = applyPrescriptions(raw, ledger).map(e => ({ ...e, kind: "strength" }));
+    }
+    setFocus(sessionType);
     setExercises(fresh);
     setRoutineMeta({
+      sessionType,
       estimatedMinutes: record.estimatedMinutes ?? null,
       warmup: record.warmup ?? null,
       cooldown: record.cooldown ?? null,
@@ -671,7 +831,7 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     <div style={s.app}>
       {screen === "setup" && (
         <SetupScreen
-          focus={focus} setFocus={setFocus}
+          decision={decideNextSession(history)}
           onGenerate={generateRoutine}
           loading={loading} error={error}
           hasExistingRoutine={exercises.length > 0}
@@ -686,8 +846,8 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
       {screen === "routine" && (
         <RoutineScreen
           exercises={exercises} loading={loading} swappingIndex={swappingIndex}
-          onSwap={handleSwap} onRefresh={generateRoutine} onBack={() => setScreen("setup")}
-          logs={logs} getLog={getLog} updateLog={updateLog}
+          onSwap={handleSwap} onRefresh={() => generateRoutine()} onBack={() => setScreen("setup")}
+          logs={logs} getLog={getLog} updateLog={updateLog} updateNotes={updateNotes}
           completedSets={completedSets} toggleSetDone={toggleSetDone}
           progress={progress} totalSetsCompleted={totalSetsCompleted}
           totalSets={totalSets} focus={focus} error={error}
@@ -716,8 +876,11 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
 }
 
 // ── Setup Screen ─────────────────────────────────────────────────────────────
-function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingRoutine, onResume, historyCount, onViewHistory, onResetAll, ledgerCount, onViewProgress }) {
+function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine, onResume, historyCount, onViewHistory, onResetAll, ledgerCount, onViewProgress }) {
   const [confirmReset, setConfirmReset] = useState(false);
+  const [showManual, setShowManual] = useState(false);
+  const isConditioning = decision.type === "Conditioning";
+
   return (
     <div style={s.container}>
       <div style={s.headerRow}>
@@ -734,13 +897,69 @@ function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingR
       </div>
 
       <section style={s.section}>
+        <h2 style={s.sectionLabel}>NEXT SESSION</h2>
+        <div style={{ ...s.nextCard, borderColor: isConditioning ? "#38bdf855" : "#a3e63555" }}>
+          <div style={s.nextType}>
+            <span style={s.nextIcon}>{isConditioning ? "🫀" : "💪"}</span>
+            <span style={{ ...s.nextTypeText, color: isConditioning ? "#7dd3fc" : "#a3e635" }}>
+              {decision.type}{isConditioning ? " · VO2 Max" : ""}
+            </span>
+          </div>
+          <p style={s.nextReason}>{decision.reason}</p>
+        </div>
+      </section>
+
+      {error && <div style={s.errorBox}>{error}</div>}
+
+      <button onClick={() => onGenerate()} disabled={loading}
+        style={{ ...s.primaryBtn, opacity: loading ? 0.5 : 1 }}>
+        {loading ? "Building your session…" : `Generate ${decision.type} Session →`}
+      </button>
+
+      {hasExistingRoutine && (
+        <button onClick={onResume} style={s.secondaryBtn}>
+          Resume Today's Workout
+        </button>
+      )}
+
+      {!showManual ? (
+        <button onClick={() => setShowManual(true)} style={s.ghostBtn}>
+          Choose a different focus
+        </button>
+      ) : (
+        <div style={s.manualBox}>
+          <div style={s.manualLabel}>Pick a session manually:</div>
+          <div style={s.focusRow}>
+            {FOCUS_OPTIONS.map(f => (
+              <button key={f} onClick={() => onGenerate(f)} disabled={loading}
+                style={s.focusBtn}>
+                {f}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {ledgerCount > 0 && (
+        <button onClick={onViewProgress} style={s.ghostBtn}>
+          📈 Progression Tracker ({ledgerCount} {ledgerCount === 1 ? "lift" : "lifts"})
+        </button>
+      )}
+
+      {historyCount > 0 && (
+        <button onClick={onViewHistory} style={s.ghostBtn}>
+          View Past Workouts ({historyCount})
+        </button>
+      )}
+
+      <section style={{ ...s.section, marginTop: 32 }}>
         <h2 style={s.sectionLabel}>YOUR EQUIPMENT</h2>
         <div style={s.gearCard}>
           <GearRow icon="🏋️" name="Bowflex SelectTech Dumbbells" detail="Adjustable weight · single pair" />
           <div style={s.gearDivider} />
           <GearRow icon="🪑" name="Adjustable Bench" detail="Flat · Incline · Decline" />
           <div style={s.gearDivider} />
-          <GearRow icon="🏃" name="Treadmill" detail="Warm-up cardio & cool-down walking" />
+          <GearRow icon="🏃" name="Treadmill" detail="Warm-up cardio, cool-down & VO2 intervals" />
           <div style={s.gearDivider} />
           <div style={s.gearItem}>
             <span style={s.gearIcon}>🔩</span>
@@ -768,45 +987,6 @@ function SetupScreen({ focus, setFocus, onGenerate, loading, error, hasExistingR
           </div>
         </div>
       </section>
-
-      <section style={s.section}>
-        <h2 style={s.sectionLabel}>TODAY'S FOCUS</h2>
-        <div style={s.focusRow}>
-          {FOCUS_OPTIONS.map(f => (
-            <button key={f} onClick={() => setFocus(f)}
-              style={{ ...s.focusBtn, ...(focus === f ? s.focusBtnActive : {}) }}>
-              {f}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {error && <div style={s.errorBox}>{error}</div>}
-
-      <button onClick={onGenerate} disabled={loading}
-        style={{ ...s.primaryBtn, opacity: loading ? 0.5 : 1 }}>
-        {loading ? "Building your routine…" : "Generate My Routine →"}
-      </button>
-
-      {hasExistingRoutine && (
-        <button onClick={onResume} style={s.secondaryBtn}>
-          Resume Today's Workout
-        </button>
-      )}
-
-      {historyCount > 0 && (
-        <button onClick={onViewHistory} style={s.ghostBtn}>
-          View Past Workouts ({historyCount})
-        </button>
-      )}
-
-      {ledgerCount > 0 && (
-        <button onClick={onViewProgress} style={s.ghostBtn}>
-          📈 Progression Tracker ({ledgerCount} {ledgerCount === 1 ? "lift" : "lifts"})
-        </button>
-      )}
-
-      <p style={s.hint}>{focus} focus · exercises tailored to your rack & dumbbells</p>
 
       <div style={s.resetZone}>
         {confirmReset ? (
@@ -848,7 +1028,7 @@ function GearRow({ icon, name, detail }) {
 // ── Routine Screen ────────────────────────────────────────────────────────────
 function RoutineScreen({
   exercises, loading, swappingIndex, onSwap, onRefresh, onBack,
-  logs, getLog, updateLog, completedSets, toggleSetDone,
+  logs, getLog, updateLog, updateNotes, completedSets, toggleSetDone,
   progress, totalSetsCompleted, totalSets, focus, error, onComplete,
   routineMeta, sectionChecks, toggleSectionCheck, onRemove,
 }) {
@@ -856,14 +1036,17 @@ function RoutineScreen({
   const warmup = routineMeta?.warmup;
   const cooldown = routineMeta?.cooldown;
   const estMin = routineMeta?.estimatedMinutes;
+  const sessionType = routineMeta?.sessionType || focus;
+  const isConditioning = sessionType === "Conditioning";
+  const unitWord = isConditioning ? "rounds" : "sets";
 
   return (
     <div style={s.container}>
       <div style={s.routineHeader}>
         <button onClick={onBack} style={s.backBtn}>← Back</button>
         <div style={{ textAlign: "center" }}>
-          <h1 style={s.routineTitle}>Today's Routine</h1>
-          <span style={s.focusTag}>{focus}</span>
+          <h1 style={s.routineTitle}>{isConditioning ? "Conditioning" : "Today's Routine"}</h1>
+          <span style={s.focusTag}>{isConditioning ? "VO2 Max · Endurance" : sessionType}</span>
         </div>
         <button onClick={onRefresh} disabled={loading} style={s.refreshBtn}>
           {loading && swappingIndex === null ? "…" : "↺ New"}
@@ -882,7 +1065,7 @@ function RoutineScreen({
       <div style={s.progressBar}>
         <div style={{ ...s.progressFill, width: `${progress}%` }} />
       </div>
-      <p style={s.progressLabel}>{totalSetsCompleted} / {totalSets} sets complete · {progress}%</p>
+      <p style={s.progressLabel}>{totalSetsCompleted} / {totalSets} {unitWord} complete · {progress}%</p>
 
       {error && <div style={s.errorBox}>{error}</div>}
 
@@ -902,6 +1085,20 @@ function RoutineScreen({
           )}
 
           {exercises.map((ex, idx) => {
+          if (ex.kind === "conditioning") {
+            return (
+              <ConditioningCard
+                key={ex.id}
+                ex={ex}
+                idx={idx}
+                completedSets={completedSets}
+                toggleSetDone={toggleSetDone}
+                notes={logs[ex.id]?.notes || ""}
+                updateNotes={updateNotes}
+                onRemove={onRemove}
+              />
+            );
+          }
           const isExpanded = expandedId === ex.id;
           const setLog = getLog(ex.id, ex.sets);
           const isSwapping = swappingIndex === idx;
@@ -1062,6 +1259,70 @@ function SectionCard({ section, prefix, accent, label, sectionChecks, toggleSect
   );
 }
 
+// ── Conditioning block card (intervals / VO2-max work) ───────────────────────
+function ConditioningCard({ ex, idx, completedSets, toggleSetDone, notes, updateNotes, onRemove }) {
+  const rounds = ex.rounds || 1;
+  const done = Array.from({ length: rounds }, (_, i) => completedSets[`${ex.id}-${i}`]).filter(Boolean).length;
+  return (
+    <div style={{ ...s.card, borderColor: "#1d3a4d" }}>
+      <div style={{ ...s.cardHeader, cursor: "default" }}>
+        <div style={s.cardLeft}>
+          <span style={{ ...s.cardNum, color: "#7dd3fc" }}>{String(idx + 1).padStart(2, "0")}</span>
+          <div>
+            <div style={s.cardName}>{ex.name}</div>
+            <div style={s.cardMeta}>
+              {ex.format ? `${ex.format} · ` : ""}{rounds} round{rounds === 1 ? "" : "s"}
+              {done > 0 && <span style={s.condDoneTag}> · {done}/{rounds} done</span>}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={s.cardBody}>
+        {ex.description && <p style={s.cardDesc}>{ex.description}</p>}
+        <div style={s.condProtocol}>
+          {ex.work && (
+            <div style={s.condRow}>
+              <span style={{ ...s.condTag, color: "#7dd3fc", borderColor: "#1d4d5e" }}>WORK</span>
+              <span style={s.condText}>{ex.work}</span>
+            </div>
+          )}
+          {ex.rest && (
+            <div style={s.condRow}>
+              <span style={{ ...s.condTag, color: "#888", borderColor: "#2a2a2a" }}>REST</span>
+              <span style={s.condText}>{ex.rest}</span>
+            </div>
+          )}
+        </div>
+
+        <div style={s.condRounds}>
+          {Array.from({ length: rounds }, (_, i) => {
+            const isDone = !!completedSets[`${ex.id}-${i}`];
+            return (
+              <button key={i} onClick={() => toggleSetDone(ex.id, i)}
+                style={{ ...s.condRoundBtn, ...(isDone ? s.condRoundBtnDone : {}) }}>
+                {isDone ? "✓ " : ""}Round {i + 1}
+              </button>
+            );
+          })}
+        </div>
+
+        <input
+          type="text"
+          placeholder="Notes — pace, speed, incline, how it felt…"
+          value={notes}
+          onChange={e => updateNotes(ex.id, e.target.value)}
+          style={s.condNotes}
+        />
+
+        <button onClick={() => onRemove(ex.id)} style={s.removeBtn}>
+          ✕ Remove this block
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── History Screen ────────────────────────────────────────────────────────────
 function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
   const [expandedId, setExpandedId] = useState(null);
@@ -1120,18 +1381,30 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
                   {rec.exercises.map((ex, i) => (
                     <div key={i} style={s.recExercise}>
                       <div style={s.recExName}>{ex.name}</div>
-                      <div style={s.recExMeta}>{ex.muscles}</div>
-                      <div style={s.recSetList}>
-                        {ex.log.map((entry, j) => (
-                          <span key={j} style={{
-                            ...s.recSetChip,
-                            ...(entry.done ? s.recSetChipDone : {}),
-                          }}>
-                            {entry.done ? "✓ " : ""}
-                            {entry.weight ? `${entry.weight}lb` : "—"} × {entry.reps || "—"}
-                          </span>
-                        ))}
-                      </div>
+                      {ex.kind === "conditioning" ? (
+                        <>
+                          <div style={s.recExMeta}>
+                            {ex.format ? `${ex.format} · ` : ""}{ex.roundsDone ?? 0}/{ex.rounds || 1} rounds
+                            {ex.work ? ` · ${ex.work}` : ""}
+                          </div>
+                          {ex.notes && <div style={s.recCondNotes}>“{ex.notes}”</div>}
+                        </>
+                      ) : (
+                        <>
+                          <div style={s.recExMeta}>{ex.muscles}</div>
+                          <div style={s.recSetList}>
+                            {(ex.log || []).map((entry, j) => (
+                              <span key={j} style={{
+                                ...s.recSetChip,
+                                ...(entry.done ? s.recSetChipDone : {}),
+                              }}>
+                                {entry.done ? "✓ " : ""}
+                                {entry.weight ? `${entry.weight}lb` : "—"} × {entry.reps || "—"}
+                              </span>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
                   ))}
                   {rec.cooldown && (
@@ -1433,6 +1706,43 @@ const s = {
     background: "#182800", border: "1px solid #2d4a0a", borderRadius: 5,
     padding: "2px 7px", marginRight: 8, textTransform: "uppercase",
     verticalAlign: "middle",
+  },
+  recCondNotes: { fontSize: 12, color: "#7dd3fc", fontStyle: "italic", marginTop: 4 },
+
+  // Next-session auto card
+  nextCard: {
+    background: "#0e1614", border: "1px solid #a3e63555", borderRadius: 14, padding: "18px",
+  },
+  nextType: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 },
+  nextIcon: { fontSize: 22 },
+  nextTypeText: { fontSize: 22, fontWeight: 800, letterSpacing: "-0.5px" },
+  nextReason: { fontSize: 13, color: "#9aa", lineHeight: 1.5, margin: 0 },
+
+  // Manual override
+  manualBox: {
+    background: "#0d0d0d", border: "1px solid #1e1e1e", borderRadius: 12,
+    padding: "14px", marginBottom: 12,
+  },
+  manualLabel: { fontSize: 12, color: "#888", marginBottom: 10 },
+
+  // Conditioning card
+  condDoneTag: { color: "#7dd3fc" },
+  condProtocol: { marginBottom: 14 },
+  condRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 },
+  condTag: {
+    fontSize: 10, fontWeight: 800, letterSpacing: "1px", minWidth: 44, textAlign: "center",
+    border: "1px solid", borderRadius: 5, padding: "2px 6px",
+  },
+  condText: { fontSize: 13, color: "#ccc", lineHeight: 1.4 },
+  condRounds: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 },
+  condRoundBtn: {
+    fontSize: 13, fontWeight: 600, background: "#1a1a1a", border: "1px solid #2a2a2a",
+    color: "#aaa", padding: "8px 14px", borderRadius: 8, cursor: "pointer",
+  },
+  condRoundBtnDone: { background: "#0d2b33", border: "1px solid #1d4d5e", color: "#7dd3fc" },
+  condNotes: {
+    width: "100%", background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8,
+    color: "#f0f0f0", fontSize: 13, padding: "10px 12px", outline: "none", marginBottom: 14,
   },
 
   // Progression tracker
