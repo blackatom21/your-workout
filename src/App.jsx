@@ -259,6 +259,45 @@ function advanceLedgerEntry(prev, perf, repRange, equipment) {
   return next;
 }
 
+// Deterministic warm-up (ramp-up) sets for heavier compound lifts.
+// Returns [{ weight, reps }] from lighter→heavier, all below the working weight.
+// Only barbell and heavier dumbbell work qualify; cable/bodyweight/light DB skip.
+function rampUpSets(equipment, workingWeight) {
+  const ladder = ladderFor(equipment);
+  const eq = (equipment || "").toLowerCase();
+  if (!ladder || workingWeight == null) return [];
+  if (eq !== "barbell" && eq !== "dumbbell") return [];
+  if (eq === "dumbbell" && workingWeight < 20) return []; // light DB isolation
+
+  const pcts = [0.5, 0.75];
+  const repsByStep = [5, 3];
+  const out = [];
+  const seen = new Set();
+  pcts.forEach((p, i) => {
+    const w = snapWeight(ladder, workingWeight * p);
+    if (w != null && w < workingWeight && !seen.has(w)) {
+      seen.add(w);
+      out.push({ weight: w, reps: repsByStep[i] ?? 4 });
+    }
+  });
+  return out;
+}
+
+// Profile context line for the AI (imperial). Empty string if nothing set.
+function profileLine(profile) {
+  if (!profile) return "";
+  const parts = [];
+  if (profile.gender) parts.push(`Gender: ${profile.gender}`);
+  if (profile.heightFt || profile.heightIn) {
+    const ft = profile.heightFt || 0;
+    const inch = profile.heightIn || 0;
+    parts.push(`Height: ${ft}'${inch}"`);
+  }
+  if (profile.weightLbs) parts.push(`Weight: ${profile.weightLbs} lbs`);
+  if (parts.length === 0) return "";
+  return `\nUSER PROFILE (use to tailor starting loads for NEW exercises, rep ranges, and conditioning intensity — but the user's LOGGED performance always takes precedence over profile estimates): ${parts.join(", ")}.\n`;
+}
+
 // ── localStorage helpers ─────────────────────────────────────────────────────
 const LS_KEYS = {
   exercises: "yw_exercises",
@@ -271,6 +310,7 @@ const LS_KEYS = {
   routineMeta: "yw_routineMeta",
   sectionChecks: "yw_sectionChecks",
   ledger: "yw_ledger",
+  profile: "yw_profile",
 };
 
 function lsGet(key, fallback) {
@@ -405,18 +445,19 @@ function applyPrescriptions(rawExercises, ledger) {
       prescribedWeight: rx.weight,
       prescribedLabel: rx.label,
       progressionNote: rx.note,
+      warmupSets: rampUpSets(equipment, rx.weight),
       tracked: !!known,
     };
   });
 }
 
 // Prompt for a strength session of a given split (Push/Pull/Legs/etc.).
-function buildStrengthPrompt(focus, briefing) {
+function buildStrengthPrompt(focus, briefing, profile) {
   return `You are a certified strength and conditioning coach running a progressive-overload program. Build today's complete STRENGTH session using ONLY this equipment:
 ${EQUIPMENT_DESCRIPTION}
 
 Today's session type: ${focus}.
-${briefing}
+${profileLine(profile)}${briefing}
 TRAINING PHILOSOPHY — reflect ALL of these:
 - Functional strength: compound, real-world movement patterns (push, pull, hinge, squat, carry, rotate), progressed over time, appropriate to today's ${focus} emphasis.
 - Mobility & flexibility: dynamic joint mobility in the warm-up and long-hold static stretching in the cool-down; full-range main exercises.
@@ -442,7 +483,7 @@ Respond ONLY with a JSON object (no markdown) in EXACTLY this shape:
 }
 
 // Prompt for a dedicated VO2-max / endurance conditioning session.
-function buildConditioningPrompt(lastConditioning) {
+function buildConditioningPrompt(lastConditioning, profile) {
   let progressNote = "";
   if (lastConditioning && Array.isArray(lastConditioning.exercises)) {
     const summary = lastConditioning.exercises
@@ -452,7 +493,7 @@ function buildConditioningPrompt(lastConditioning) {
   }
   return `You are a certified conditioning coach. Build today's dedicated CARDIOVASCULAR / VO2-MAX session using ONLY this equipment:
 ${EQUIPMENT_DESCRIPTION}
-
+${profileLine(profile)}
 This is an ENDURANCE day, not a strength day. The centerpiece is structured cardiovascular work to build VO2 max and aerobic capacity, primarily on the treadmill, optionally mixed with light functional circuit movements for a metabolic effect. Do NOT program heavy strength lifting today.
 ${progressNote}
 PRINCIPLES:
@@ -484,6 +525,7 @@ export default function App() {
   const [sectionChecks, setSectionChecks] = useState(() => lsGet(LS_KEYS.sectionChecks, {}));
   const [history, setHistory]           = useState(() => lsGet(LS_KEYS.history, []));
   const [ledger, setLedger]             = useState(() => lsGet(LS_KEYS.ledger, {}));
+  const [profile, setProfile]           = useState(() => lsGet(LS_KEYS.profile, {}));
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState(null);
   const [swappingIndex, setSwappingIndex] = useState(null);
@@ -495,6 +537,7 @@ export default function App() {
   useEffect(() => { lsSet(LS_KEYS.logs, logs); }, [logs]);
   useEffect(() => { lsSet(LS_KEYS.completedSets, completedSets); }, [completedSets]);
   useEffect(() => { lsSet(LS_KEYS.ledger, ledger); }, [ledger]);
+  useEffect(() => { lsSet(LS_KEYS.profile, profile); }, [profile]);
   useEffect(() => { lsSet(LS_KEYS.routineMeta, routineMeta); }, [routineMeta]);
   useEffect(() => { lsSet(LS_KEYS.sectionChecks, sectionChecks); }, [sectionChecks]);
   useEffect(() => { lsSet(LS_KEYS.history, history); }, [history]);
@@ -535,8 +578,8 @@ export default function App() {
 
     const isConditioning = sessionType === "Conditioning";
     const prompt = isConditioning
-      ? buildConditioningPrompt(lastConditioning)
-      : buildStrengthPrompt(sessionType, buildProgressionBriefing(ledger, history, sessionType));
+      ? buildConditioningPrompt(lastConditioning, profile)
+      : buildStrengthPrompt(sessionType, buildProgressionBriefing(ledger, history, sessionType), profile);
 
     try {
       const text = await callAI(prompt);
@@ -588,7 +631,7 @@ export default function App() {
       setError(e.message || "Something went wrong.");
     }
     setLoading(false);
-  }, [callAI, ledger, history, lastConditioning]);
+  }, [callAI, ledger, history, lastConditioning, profile]);
 
   // ── Swap a single exercise ────────────────────────────────────────────────
   const handleSwap = useCallback(async (index) => {
@@ -822,6 +865,7 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     setSectionChecks({});
     setHistory([]);
     setLedger({});
+    setProfile({});
     setFocus("Full Body");
     setError(null);
     setScreen("setup");
@@ -841,6 +885,7 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
           onResetAll={resetAllData}
           ledgerCount={Object.keys(ledger).length}
           onViewProgress={() => setScreen("progress")}
+          profile={profile} setProfile={setProfile}
         />
       )}
       {screen === "routine" && (
@@ -876,10 +921,17 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
 }
 
 // ── Setup Screen ─────────────────────────────────────────────────────────────
-function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine, onResume, historyCount, onViewHistory, onResetAll, ledgerCount, onViewProgress }) {
+function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine, onResume, historyCount, onViewHistory, onResetAll, ledgerCount, onViewProgress, profile, setProfile }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [showManual, setShowManual] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const isConditioning = decision.type === "Conditioning";
+
+  const setField = (field, value) => setProfile({ ...profile, [field]: value });
+  const hasProfile = profile && (profile.gender || profile.weightLbs || profile.heightFt || profile.heightIn);
+  const profileSummary = hasProfile
+    ? [profile.gender, (profile.heightFt || profile.heightIn) ? `${profile.heightFt || 0}'${profile.heightIn || 0}"` : null, profile.weightLbs ? `${profile.weightLbs} lbs` : null].filter(Boolean).join(" · ")
+    : "Not set — tap to personalize";
 
   return (
     <div style={s.container}>
@@ -986,6 +1038,61 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
             </div>
           </div>
         </div>
+      </section>
+
+      <section style={s.section}>
+        <h2 style={s.sectionLabel}>YOUR PROFILE</h2>
+        {!showProfile ? (
+          <button onClick={() => setShowProfile(true)} style={s.profileSummaryBtn}>
+            <span style={s.profileIcon}>👤</span>
+            <span style={s.profileSummaryText}>{profileSummary}</span>
+            <span style={s.profileEdit}>Edit</span>
+          </button>
+        ) : (
+          <div style={s.profileCard}>
+            <div style={s.profileField}>
+              <label style={s.profileLabel}>Gender</label>
+              <div style={s.genderRow}>
+                {["Male", "Female", "Other"].map(g => (
+                  <button key={g} onClick={() => setField("gender", profile.gender === g ? "" : g)}
+                    style={{ ...s.genderBtn, ...(profile.gender === g ? s.genderBtnActive : {}) }}>
+                    {g}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={s.profileField}>
+              <label style={s.profileLabel}>Height</label>
+              <div style={s.heightRow}>
+                <input type="number" min="0" inputMode="numeric" placeholder="ft"
+                  value={profile.heightFt || ""}
+                  onChange={e => setField("heightFt", e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))}
+                  style={s.profileInput} />
+                <span style={s.heightUnit}>ft</span>
+                <input type="number" min="0" max="11" inputMode="numeric" placeholder="in"
+                  value={profile.heightIn || ""}
+                  onChange={e => setField("heightIn", e.target.value === "" ? "" : Math.max(0, Math.min(11, Number(e.target.value))))}
+                  style={s.profileInput} />
+                <span style={s.heightUnit}>in</span>
+              </div>
+            </div>
+            <div style={s.profileField}>
+              <label style={s.profileLabel}>Weight</label>
+              <div style={s.heightRow}>
+                <input type="number" min="0" inputMode="numeric" placeholder="lbs"
+                  value={profile.weightLbs || ""}
+                  onChange={e => setField("weightLbs", e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))}
+                  style={s.profileInput} />
+                <span style={s.heightUnit}>lbs</span>
+              </div>
+            </div>
+            <button onClick={() => setShowProfile(false)} style={s.profileDoneBtn}>Done</button>
+            <p style={s.profileNote}>
+              Used to tailor starting loads and intensity. All optional — your logged
+              performance always takes precedence once you've trained a lift.
+            </p>
+          </div>
+        )}
       </section>
 
       <div style={s.resetZone}>
@@ -1147,6 +1254,25 @@ function RoutineScreen({
                       <div style={s.rxNote}>{ex.progressionNote}</div>
                     )}
                   </div>
+
+                  {ex.warmupSets && ex.warmupSets.length > 0 && (
+                    <div style={s.warmupBox}>
+                      <div style={s.warmupTitle}>WARM-UP SETS</div>
+                      {ex.warmupSets.map((w, wi) => (
+                        <div key={wi} style={s.warmupRow}>
+                          <span style={s.warmupNum}>W{wi + 1}</span>
+                          <span style={s.warmupWeight}>
+                            {ex.equipment === "barbell"
+                              ? `${w.weight} lbs · ${barbellPlateLabel(w.weight)}`
+                              : `${w.weight} lbs${ex.equipment === "dumbbell" ? " each" : ""}`}
+                          </span>
+                          <span style={s.warmupReps}>× {w.reps}</span>
+                        </div>
+                      ))}
+                      <div style={s.warmupHint}>Then your working sets ↓</div>
+                    </div>
+                  )}
+
                   <div style={s.setTable}>
                     <div style={s.setTableHeader}>
                       <span>SET</span>
@@ -1744,6 +1870,59 @@ const s = {
     width: "100%", background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8,
     color: "#f0f0f0", fontSize: 13, padding: "10px 12px", outline: "none", marginBottom: 14,
   },
+
+  // Profile
+  profileSummaryBtn: {
+    display: "flex", alignItems: "center", gap: 12, width: "100%",
+    background: "#111", border: "1px solid #1e1e1e", borderRadius: 12,
+    padding: "14px 16px", cursor: "pointer", textAlign: "left",
+  },
+  profileIcon: { fontSize: 20 },
+  profileSummaryText: { flex: 1, fontSize: 14, color: "#ccc" },
+  profileEdit: { fontSize: 12, fontWeight: 700, color: "#a3e635" },
+  profileCard: {
+    background: "#111", border: "1px solid #1e1e1e", borderRadius: 12, padding: "16px",
+  },
+  profileField: { marginBottom: 16 },
+  profileLabel: {
+    display: "block", fontSize: 11, fontWeight: 700, letterSpacing: "1px",
+    color: "#888", textTransform: "uppercase", marginBottom: 8,
+  },
+  genderRow: { display: "flex", gap: 8 },
+  genderBtn: {
+    flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2a2a2a",
+    background: "#1a1a1a", color: "#aaa", fontSize: 13, cursor: "pointer",
+  },
+  genderBtnActive: {
+    border: "1px solid #a3e635", background: "#182800", color: "#a3e635", fontWeight: 700,
+  },
+  heightRow: { display: "flex", alignItems: "center", gap: 8 },
+  profileInput: {
+    width: 80, background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8,
+    color: "#f0f0f0", fontSize: 15, padding: "9px 12px", outline: "none",
+  },
+  heightUnit: { fontSize: 13, color: "#666", marginRight: 8 },
+  profileDoneBtn: {
+    width: "100%", padding: "12px", background: "#a3e635", color: "#0a0a0a",
+    border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: "pointer",
+  },
+  profileNote: { fontSize: 12, color: "#666", lineHeight: 1.5, marginTop: 12 },
+
+  // Warm-up (ramp-up) sets
+  warmupBox: {
+    background: "#161205", border: "1px solid #3a2e0a", borderRadius: 10,
+    padding: "12px 14px", marginBottom: 12,
+  },
+  warmupTitle: {
+    fontSize: 10, fontWeight: 800, letterSpacing: "1.5px", color: "#c9a227", marginBottom: 8,
+  },
+  warmupRow: { display: "flex", alignItems: "center", gap: 10, padding: "3px 0" },
+  warmupNum: {
+    fontSize: 11, fontWeight: 800, color: "#c9a227", minWidth: 26,
+  },
+  warmupWeight: { flex: 1, fontSize: 13, color: "#d8c88a" },
+  warmupReps: { fontSize: 13, color: "#9a8a4a", fontWeight: 600 },
+  warmupHint: { fontSize: 11, color: "#6a5a2a", marginTop: 6, fontStyle: "italic" },
 
   // Progression tracker
   progressIntro: { fontSize: 13, color: "#777", lineHeight: 1.5, marginBottom: 20 },
