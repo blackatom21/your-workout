@@ -22,6 +22,23 @@ const EQUIPMENT_DESCRIPTION = `
 - Achievable barbell totals (35 lb bar + plates): 35, 55, 65, 85, 105, 125, 135, 155 lbs
 `.trim();
 
+// Evidence-based training principles distilled from 2025 exercise-science
+// guidance. Injected into strength prompts to raise routine quality.
+const TRAINING_KNOWLEDGE = `
+EVIDENCE-BASED TRAINING PRINCIPLES (apply when choosing and ordering exercises):
+- Exercise order: program the biggest compound, multi-joint movements FIRST while the user is fresh (squat, hinge, press, row, pull-up patterns), then accessories and isolation. A good 6-exercise session is ~3-4 compounds followed by ~2-3 accessories.
+- Mechanical tension is the primary driver of growth: favor challenging loads through a FULL range of motion with a controlled eccentric (~2 sec lowering). Put a brief, specific form cue (bracing, joint stacking, bar path) in each description.
+- Rep ranges by intent (all build muscle when taken close to failure, leaving ~1-3 reps in reserve rather than grinding to failure):
+    • Primary compounds / strength emphasis: 4-8 reps
+    • Hypertrophy (default for most work): 8-12 reps
+    • Metabolic / endurance accessories: 12-20 reps
+- Respect the day's split emphasis; train muscles across the week rather than redundantly hammering one group in a single session.
+- Rest guidance to note where useful: ~2-3 min after heavy compounds, ~60-90 sec for isolation work.
+- Do NOT raise volume and intensity at once. The app handles load progression, so keep rep ranges stable session-to-session for tracked lifts.
+- Favor joint-friendly, sustainable movements and full-ROM technique over ego loading; quality reps beat heavy sloppy ones.
+- Recovery principle: muscle is built during recovery, and protein/sleep support it — so program balanced, sustainable sessions rather than excessive junk volume.
+`.trim();
+
 // Manual-override focus options (auto-programming is the default path).
 const FOCUS_OPTIONS = ["Push", "Pull", "Legs", "Full Body", "Upper Body", "Lower Body", "Core", "Conditioning"];
 
@@ -473,6 +490,8 @@ TRAINING PHILOSOPHY — reflect ALL of these:
 - Mobility & flexibility: dynamic joint mobility in the warm-up and long-hold static stretching in the cool-down; full-range main exercises.
 - Cardiovascular endurance: treadmill in the warm-up and cool-down (today's dedicated conditioning happens on separate days, so keep cardio here light).
 - Equipment variety: make real use of the F22's cable attachments — lat pulldown bar, straight bar, D/stirrup handles, T-bar/landmine handle — plus the landmine and dip bars, not just barbell and dumbbells.
+
+${TRAINING_KNOWLEDGE}
 
 PROGRESSION RULES:
 - Prefer reusing tracked lifts from the PROGRESSION LEDGER that fit today's ${focus} emphasis, using their EXACT names, so the app can apply progressive overload. Keep their rep ranges stable.
