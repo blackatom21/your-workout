@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 // ── Equipment context passed to the AI ──────────────────────────────────────
 const EQUIPMENT_DESCRIPTION = `
@@ -40,7 +40,7 @@ EVIDENCE-BASED TRAINING PRINCIPLES (apply when choosing and ordering exercises):
 `.trim();
 
 // Manual-override focus options (auto-programming is the default path).
-const FOCUS_OPTIONS = ["Push", "Pull", "Legs", "Full Body", "Upper Body", "Lower Body", "Core", "Conditioning"];
+const FOCUS_OPTIONS = ["Push", "Pull", "Legs", "Full Body", "Upper Body", "Lower Body", "Core", "Conditioning", "Recovery"];
 
 // ── Auto-Programming Engine ──────────────────────────────────────────────────
 // Strength emphasis rotates through these for balanced recovery.
@@ -53,9 +53,10 @@ function sessionTypeOf(rec) {
 }
 
 // Decide the next appropriate session from completed history.
-// Returns { type, reason }.
+// Recovery sessions are transparent — filtered out so they never consume a
+// rotation slot or affect conditioning cadence.
 function decideNextSession(history) {
-  const recent = (history || []).slice(0, 8); // newest first
+  const recent = (history || []).filter(r => sessionTypeOf(r) !== "Recovery").slice(0, 8); // newest first
   if (recent.length === 0) {
     return { type: "Full Body", reason: "Your first session — a balanced full-body start to set baselines." };
   }
@@ -177,21 +178,15 @@ function parseRepRange(reps) {
 }
 
 // From a completed exercise's log, derive what actually happened.
-function summarizePerformance(logEntries, repHigh, repLow) {
+function summarizePerformance(logEntries, repHigh) {
   const done = logEntries.filter(e => e.done);
-  if (done.length === 0) {
-    return { completedAllSets: false, hitTopOfRange: false, belowBottomOfRange: false, workingWeight: null };
-  }
+  if (done.length === 0) return { completedAllSets: false, hitTopOfRange: false, workingWeight: null };
   const completedAllSets = done.length === logEntries.length;
   const weights = done.map(e => Number(e.weight)).filter(w => !isNaN(w) && w > 0);
   const workingWeight = weights.length ? Math.max(...weights) : null;
   const reps = done.map(e => Number(e.reps)).filter(r => !isNaN(r) && r > 0);
   const hitTopOfRange = reps.length === done.length && reps.every(r => r >= repHigh);
-  // Under-performance: every logged set fell below the bottom of the rep range.
-  // Only meaningful when reps were actually logged for the completed sets.
-  const belowBottomOfRange =
-    repLow != null && reps.length === done.length && reps.length > 0 && reps.every(r => r < repLow);
-  return { completedAllSets, hitTopOfRange, belowBottomOfRange, workingWeight };
+  return { completedAllSets, hitTopOfRange, workingWeight };
 }
 
 // Given a ledger entry, produce the prescription the user should aim for today.
@@ -261,21 +256,8 @@ function advanceLedgerEntry(prev, perf, repRange, equipment) {
     next.currentWeight = nextWeight(ladder, current);
     next.lastAction = next.currentWeight > current ? "increase" : "repeat";
     next.consecutiveFailures = 0;
-  } else if (perf.completedAllSets && perf.belowBottomOfRange) {
-    // Finished the sets but every set fell BELOW the bottom of the rep range —
-    // the load is too heavy. Treat as a failure so two in a row trigger a deload.
-    const fails = base.consecutiveFailures + 1;
-    if (fails >= 2) {
-      next.currentWeight = prevWeight(ladder, current);
-      next.lastAction = "deload";
-      next.consecutiveFailures = 0;
-    } else {
-      next.currentWeight = current;
-      next.lastAction = "repeat";
-      next.consecutiveFailures = fails;
-    }
   } else if (perf.completedAllSets) {
-    // Finished all sets, reps within range but not at the top — repeat, chase more reps.
+    // Finished all sets but not at the top — repeat, chase more reps.
     next.currentWeight = current;
     next.lastAction = "repeat";
     next.consecutiveFailures = 0;
@@ -392,19 +374,6 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// Collision-resistant id. Uses crypto.randomUUID when available, with a fallback.
-function uid(prefix) {
-  let rand;
-  try {
-    rand = (typeof crypto !== "undefined" && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  } catch {
-    rand = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-  return prefix ? `${prefix}-${rand}` : rand;
-}
-
 function formatDate(iso) {
   try {
     const d = new Date(iso);
@@ -450,7 +419,7 @@ function buildProgressionBriefing(ledger, history, focus) {
   if (entries.length > 0) {
     out += "\nPROGRESSION LEDGER — these are tracked lifts. When one fits today's focus, REUSE ITS EXACT NAME so progressive overload continues. Do NOT set their weight (the app computes it):\n";
     // Show the most relevant / recently trained first, cap at 12 lines.
-    const sorted = [...entries].sort((a, b) => (b.sessions || 0) - (a.sessions || 0)).slice(0, 12);
+    const sorted = entries.sort((a, b) => (b.sessions || 0) - (a.sessions || 0)).slice(0, 12);
     for (const e of sorted) {
       const load = ladderFor(e.equipment)
         ? `${snapWeight(ladderFor(e.equipment), e.currentWeight)} lbs`
@@ -498,7 +467,7 @@ function applyPrescriptions(rawExercises, ledger) {
 
     return {
       ...e,
-      id: uid("ex"),
+      id: `ex-${Date.now()}-${i}`,
       equipment,
       reps: e.reps,
       prescribedWeight: rx.weight,
@@ -531,6 +500,8 @@ PROGRESSION RULES:
 - Do NOT prescribe weights — the app calculates loads. For each MAIN exercise set "equipment" to one of: "barbell", "dumbbell", "cable", "bodyweight", "other". For brand-new loaded exercises only, include a rough "start_weight" number in lbs.
 
 The session MUST have: warm-up (treadmill cardio + dynamic mobility), exactly 6 main exercises matching the ${focus} emphasis, and cool-down (treadmill walk + static stretching). Estimate total minutes.
+
+CORE: include at least one dedicated core/trunk movement (e.g. hanging leg raises, landmine rotations, cable woodchops, weighted decline sit-ups, planks, ab-wheel rollouts) where it fits the day's focus. Weight core toward Legs, Lower Body, and Full Body days; on Push/Pull days include it only if it complements the session. Don't force core into every slot — one well-chosen core movement is enough.
 
 Respond ONLY with a JSON object (no markdown) in EXACTLY this shape:
 {
@@ -580,6 +551,30 @@ Respond ONLY with a JSON object (no markdown) in EXACTLY this shape:
 }`;
 }
 
+// Prompt for a gentle active-recovery / mobility session.
+function buildRecoveryPrompt(profile) {
+  return `You are a recovery and mobility coach. Build a gentle ACTIVE RECOVERY session using ONLY this equipment:
+${EQUIPMENT_DESCRIPTION}
+${profileLine(profile)}
+This is a RECOVERY day. The goal is to promote blood flow, mobility, and relaxation WITHOUT training hard. Do NOT program heavy lifting, intervals, or anything fatiguing — keep all intensity low (RPE 4 or below).
+
+Include a mix of: light treadmill walking, dynamic mobility drills, foam rolling of major muscle groups, and longer-hold static stretching (20-45 sec holds). Optionally finish with a brief breathing / down-regulation activity. Each recovery item should have a short duration.
+
+Respond ONLY with a JSON object (no markdown) in EXACTLY this shape:
+{
+  "estimated_minutes": 25,
+  "warmup": {"title":"Easy Aerobic Flush","duration":"5 min","activities":["5 min easy treadmill walk at a relaxed, conversational pace"]},
+  "recovery": [
+    {"name":"Foam Roll — Quads & IT Band","duration":"3 min","description":"Slow rolls, pause and breathe on tender spots."},
+    {"name":"World's Greatest Stretch","duration":"2 min (1 each side)","description":"Move slowly through the full range, no bouncing."},
+    {"name":"90/90 Hip Stretch","duration":"2 min","description":"Hold each side, stay relaxed and breathe."},
+    {"name":"Thoracic Rotations","duration":"2 min","description":"Gentle spinal rotation to open the upper back."}
+  ],
+  "cooldown": {"title":"Breathing & Down-Regulation","duration":"3 min","activities":["Box breathing 4-4-4-4 for 2-3 minutes to settle the nervous system"]}
+}
+Make it restorative and appropriate for the user's profile.`;
+}
+
 // ── Root component ───────────────────────────────────────────────────────────
 export default function App() {
   const [screen, setScreen]             = useState(() => lsGet(LS_KEYS.screen, "setup"));
@@ -596,108 +591,44 @@ export default function App() {
   const [error, setError]               = useState(null);
   const [swappingIndex, setSwappingIndex] = useState(null);
 
-  // Tracks the in-flight AI request so it can be aborted (timeout / unmount).
-  const abortRef = useRef(null);
-
-  // The day-scoped persistence effects (logs/completedSets/sectionChecks) must
-  // NOT write on the initial mount commit: at that point state still holds the
-  // rehydrated value, and if it's a new day the reset (setLogs({}) below) hasn't
-  // applied yet — writing here would persist stale data before it's cleared.
-  // Skipping the first run of each gated effect removes the race entirely; the
-  // reset's own re-render then writes the cleared value normally.
-  const skipFirstLogsWrite = useRef(true);
-  const skipFirstCompletedWrite = useRef(true);
-  const skipFirstChecksWrite = useRef(true);
-
-  // Auto-reset logs if it's a new day (keep exercises, clear progress).
-  // Re-checks on mount AND whenever the tab regains focus/visibility, so a
-  // session left open across midnight doesn't carry yesterday's logs into today
-  // (which would otherwise wrongly advance the progression ledger).
-  useEffect(() => {
-    const checkNewDay = () => {
-      const last = lsGet(LS_KEYS.lastDate, null);
-      const today = todayStr();
-      if (last && last !== today) {
-        setLogs({});
-        setCompletedSets({});
-        setSectionChecks({});
-      }
-      lsSet(LS_KEYS.lastDate, today);
-    };
-    checkNewDay();
-    const onVisible = () => { if (document.visibilityState === "visible") checkNewDay(); };
-    window.addEventListener("focus", checkNewDay);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.removeEventListener("focus", checkNewDay);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, []);
-
-  // Persist every state change to localStorage. Day-scoped keys skip their first
-  // run (see refs above) so the mount-time new-day reset is never clobbered by a
-  // stale write; the non-day-scoped keys persist freely from the first commit.
+  // Persist every state change to localStorage
   useEffect(() => { lsSet(LS_KEYS.screen, screen); }, [screen]);
   useEffect(() => { lsSet(LS_KEYS.focus, focus); }, [focus]);
   useEffect(() => { lsSet(LS_KEYS.exercises, exercises); }, [exercises]);
-  useEffect(() => {
-    if (skipFirstLogsWrite.current) { skipFirstLogsWrite.current = false; return; }
-    lsSet(LS_KEYS.logs, logs);
-  }, [logs]);
-  useEffect(() => {
-    if (skipFirstCompletedWrite.current) { skipFirstCompletedWrite.current = false; return; }
-    lsSet(LS_KEYS.completedSets, completedSets);
-  }, [completedSets]);
+  useEffect(() => { lsSet(LS_KEYS.logs, logs); }, [logs]);
+  useEffect(() => { lsSet(LS_KEYS.completedSets, completedSets); }, [completedSets]);
   useEffect(() => { lsSet(LS_KEYS.ledger, ledger); }, [ledger]);
   useEffect(() => { lsSet(LS_KEYS.profile, profile); }, [profile]);
   useEffect(() => { lsSet(LS_KEYS.routineMeta, routineMeta); }, [routineMeta]);
-  useEffect(() => {
-    if (skipFirstChecksWrite.current) { skipFirstChecksWrite.current = false; return; }
-    lsSet(LS_KEYS.sectionChecks, sectionChecks);
-  }, [sectionChecks]);
+  useEffect(() => { lsSet(LS_KEYS.sectionChecks, sectionChecks); }, [sectionChecks]);
   useEffect(() => { lsSet(LS_KEYS.history, history); }, [history]);
 
-  // ── API call (proxied through /api/generate → Gemini) ────────────────────
-  // Aborts any previous in-flight request and enforces a 45s timeout so a hung
-  // proxy can't leave the UI stuck in a loading state forever.
-  const callAI = useCallback(async (prompt) => {
-    if (abortRef.current) abortRef.current.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const timeout = setTimeout(() => controller.abort(), 45000);
-    try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
-        signal: controller.signal,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "API error");
-      return data.text || "";
-    } catch (e) {
-      if (e.name === "AbortError") {
-        throw new Error("The request timed out — check your connection and try again.");
-      }
-      throw e;
-    } finally {
-      clearTimeout(timeout);
-      if (abortRef.current === controller) abortRef.current = null;
+  // Auto-reset logs if it's a new day (keep exercises, clear progress)
+  useEffect(() => {
+    const last = lsGet(LS_KEYS.lastDate, null);
+    const today = todayStr();
+    if (last && last !== today) {
+      setLogs({});
+      setCompletedSets({});
+      setSectionChecks({});
     }
+    lsSet(LS_KEYS.lastDate, today);
   }, []);
 
-  // Abort any in-flight AI request on unmount.
-  useEffect(() => () => { if (abortRef.current) abortRef.current.abort(); }, []);
+  // ── API call (proxied through /api/generate → Gemini) ────────────────────
+  const callAI = useCallback(async (prompt) => {
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "API error");
+    return data.text || "";
+  }, []);
 
   // Summarize the most recent conditioning session so the AI can progress it.
-  const lastConditioning = useMemo(
-    () => history.find(r => sessionTypeOf(r) === "Conditioning"),
-    [history]
-  );
-
-  // The next recommended session. Memoized so it isn't recomputed on every
-  // unrelated render (e.g. typing in the profile form).
-  const decision = useMemo(() => decideNextSession(history), [history]);
+  const lastConditioning = history.find(r => sessionTypeOf(r) === "Conditioning");
 
   // ── Generate the next session (auto-decided type, or a manual override) ────
   const generateRoutine = useCallback(async (overrideType) => {
@@ -707,20 +638,45 @@ export default function App() {
     setError(null);
 
     const isConditioning = sessionType === "Conditioning";
-    const prompt = isConditioning
-      ? buildConditioningPrompt(lastConditioning, profile)
-      : buildStrengthPrompt(sessionType, buildProgressionBriefing(ledger, history, sessionType), profile);
+    const isRecovery = sessionType === "Recovery";
+    const prompt = isRecovery
+      ? buildRecoveryPrompt(profile)
+      : isConditioning
+        ? buildConditioningPrompt(lastConditioning, profile)
+        : buildStrengthPrompt(sessionType, buildProgressionBriefing(ledger, history, sessionType), profile);
 
     try {
       const text = await callAI(prompt);
       const routine = parseRoutine(text);
 
-      if (isConditioning) {
+      if (isRecovery) {
+        const blocks = Array.isArray(routine?.recovery) ? routine.recovery : null;
+        if (blocks && blocks.length > 0) {
+          const withIds = blocks.map((b, i) => ({
+            ...b,
+            id: `recov-${Date.now()}-${i}`,
+            kind: "recovery",
+          }));
+          setExercises(withIds);
+          setRoutineMeta({
+            sessionType,
+            estimatedMinutes: routine.estimated_minutes ?? null,
+            warmup: routine.warmup ?? null,
+            cooldown: routine.cooldown ?? null,
+          });
+          setLogs({});
+          setCompletedSets({});
+          setSectionChecks({});
+          setScreen("routine");
+        } else {
+          setError("Couldn't parse the recovery session — tap Generate to try again.");
+        }
+      } else if (isConditioning) {
         const blocks = Array.isArray(routine?.conditioning) ? routine.conditioning : null;
         if (blocks && blocks.length > 0) {
           const withIds = blocks.map((b, i) => ({
             ...b,
-            id: uid("cond"),
+            id: `cond-${Date.now()}-${i}`,
             kind: "conditioning",
             rounds: Math.max(1, Number(b.rounds) || 1),
           }));
@@ -806,19 +762,12 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
   const getLog = (exerciseId, sets) =>
     logs[exerciseId] || Array.from({ length: sets }, (_, i) => ({ set: i + 1, weight: "", reps: "" }));
 
-  // Store the raw input string (so decimals like "7.5" can be typed); reject only
-  // clearly invalid characters and negatives. Numeric coercion happens at read time.
-  const updateLog = (exerciseId, setIndex, sets, field, value) => {
-    // Allow empty, or a non-negative number with optional single decimal point.
-    const clean = value === "" ? "" : (/^\d*\.?\d*$/.test(value) ? value : undefined);
-    if (clean === undefined) return; // ignore invalid keystrokes (letters, "-", etc.)
-    const length = Math.max(Number(sets) || 1, setIndex + 1);
+  const updateLog = (exerciseId, setIndex, field, value) => {
+    const clamped = value === "" ? "" : Math.max(0, Number(value));
     setLogs(prev => {
-      const current = prev[exerciseId] || Array.from({ length }, (_, i) => ({ set: i + 1, weight: "", reps: "" }));
+      const current = prev[exerciseId] || Array.from({ length: 99 }, (_, i) => ({ set: i + 1, weight: "", reps: "" }));
       const updated = [...current];
-      // Grow the array if needed without the old fixed 99-row allocation.
-      while (updated.length < length) updated.push({ set: updated.length + 1, weight: "", reps: "" });
-      updated[setIndex] = { ...updated[setIndex], [field]: clean };
+      updated[setIndex] = { ...updated[setIndex], [field]: clamped };
       return { ...prev, [exerciseId]: updated };
     });
   };
@@ -849,8 +798,8 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     setLogs(prev => ({ ...prev, [exerciseId]: { ...(prev[exerciseId] || {}), notes: value } }));
   }, []);
 
-  // ── Progress (units = strength sets OR conditioning rounds) ───────────────
-  const unitsOf = (ex) => ex.kind === "conditioning" ? (ex.rounds || 1) : (ex.sets || 0);
+  // ── Progress (units = strength sets, conditioning rounds, recovery items) ──
+  const unitsOf = (ex) => ex.kind === "conditioning" ? (ex.rounds || 1) : ex.kind === "recovery" ? 1 : (ex.sets || 0);
   const totalSets = exercises.reduce((a, ex) => a + unitsOf(ex), 0);
   const totalSetsCompleted = exercises.reduce((a, ex) => {
     for (let i = 0; i < unitsOf(ex); i++) if (completedSets[`${ex.id}-${i}`]) a++;
@@ -864,9 +813,10 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     const now = new Date();
     const sessionType = routineMeta?.sessionType || focus;
     const isConditioning = sessionType === "Conditioning";
+    const isRecovery = sessionType === "Recovery";
 
     const record = {
-      id: uid("rec"),
+      id: `rec-${Date.now()}`,
       date: now.toISOString(),
       dayOfWeek: now.toLocaleDateString(undefined, { weekday: "long" }),
       focus: sessionType,
@@ -877,6 +827,15 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
       warmup: routineMeta?.warmup ?? null,
       cooldown: routineMeta?.cooldown ?? null,
       exercises: exercises.map(ex => {
+        if (ex.kind === "recovery") {
+          return {
+            kind: "recovery",
+            name: ex.name,
+            duration: ex.duration,
+            description: ex.description,
+            done: !!completedSets[`${ex.id}-0`],
+          };
+        }
         if (ex.kind === "conditioning") {
           const rounds = ex.rounds || 1;
           return {
@@ -911,8 +870,8 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
       }),
     };
 
-    // Advance the strength progression ledger (conditioning days skip this).
-    if (!isConditioning) {
+    // Advance the strength progression ledger (conditioning & recovery skip this).
+    if (!isConditioning && !isRecovery) {
       setLedger(prev => {
         const next = { ...prev };
         for (const ex of exercises) {
@@ -924,7 +883,7 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
             reps: entry.reps,
             done: !!completedSets[`${ex.id}-${i}`],
           }));
-          const perf = summarizePerformance(logEntries, range.high, range.low);
+          const perf = summarizePerformance(logEntries, range.high);
           const touched = logEntries.some(e => e.done || (e.weight !== "" && e.weight != null));
           if (!touched && !next[key]) continue;
           next[key] = {
@@ -952,10 +911,19 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
   const repeatWorkout = useCallback((record) => {
     const sessionType = record.sessionType || record.focus || "Full Body";
     const isConditioning = sessionType === "Conditioning";
+    const isRecovery = sessionType === "Recovery";
     let fresh;
-    if (isConditioning) {
+    if (isRecovery) {
       fresh = record.exercises.map((ex, i) => ({
-        id: uid("cond"),
+        id: `recov-${Date.now()}-${i}`,
+        kind: "recovery",
+        name: ex.name,
+        duration: ex.duration,
+        description: ex.description,
+      }));
+    } else if (isConditioning) {
+      fresh = record.exercises.map((ex, i) => ({
+        id: `cond-${Date.now()}-${i}`,
         kind: "conditioning",
         name: ex.name,
         format: ex.format,
@@ -1015,7 +983,7 @@ Respond ONLY with a single JSON object (no markdown, no extra text):
     <div style={s.app}>
       {screen === "setup" && (
         <SetupScreen
-          decision={decision}
+          decision={decideNextSession(history)}
           onGenerate={generateRoutine}
           loading={loading} error={error}
           hasExistingRoutine={exercises.length > 0}
@@ -1070,15 +1038,6 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
   const isConditioning = decision.type === "Conditioning";
 
   const setField = (field, value) => setProfile({ ...profile, [field]: value });
-  // Numeric profile field: store the raw string so decimals (e.g. "182.5") can be
-  // typed; reject invalid characters and optionally clamp to a max. Coercion to a
-  // number happens at read time (estimatedMaxHr/profileLine already use Number()).
-  const setNumField = (field, value, max) => {
-    if (value === "") return setField(field, "");
-    if (!/^\d*\.?\d*$/.test(value)) return; // ignore letters, "-", etc.
-    if (max != null && Number(value) > max) return;
-    setField(field, value);
-  };
   const estMaxHr = estimatedMaxHr(profile);
 
   return (
@@ -1090,7 +1049,7 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
           <p style={s.subtitle}>Daily Routines Built Around Your Gear</p>
         </div>
         <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
-          <button onClick={onViewHistory} style={s.historyIconBtn} title="Workout history" aria-label="Workout history">
+          <button onClick={onViewHistory} style={s.historyIconBtn} title="Workout history">
             🗂️{historyCount > 0 && <span style={s.historyCount}>{historyCount}</span>}
           </button>
         </div>
@@ -1117,9 +1076,9 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
             <div style={s.profileField}>
               <label style={s.profileLabel}>Age</label>
               <div style={s.heightRow}>
-                <input type="text" inputMode="numeric" placeholder="years"
+                <input type="number" min="0" inputMode="numeric" placeholder="years"
                   value={profile.age || ""}
-                  onChange={e => setNumField("age", e.target.value)}
+                  onChange={e => setField("age", e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))}
                   style={s.profileInput} />
                 <span style={s.heightUnit}>years</span>
               </div>
@@ -1127,14 +1086,14 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
             <div style={s.profileField}>
               <label style={s.profileLabel}>Height</label>
               <div style={s.heightRow}>
-                <input type="text" inputMode="numeric" placeholder="ft"
+                <input type="number" min="0" inputMode="numeric" placeholder="ft"
                   value={profile.heightFt || ""}
-                  onChange={e => setNumField("heightFt", e.target.value)}
+                  onChange={e => setField("heightFt", e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))}
                   style={s.profileInput} />
                 <span style={s.heightUnit}>ft</span>
-                <input type="text" inputMode="numeric" placeholder="in"
+                <input type="number" min="0" max="11" inputMode="numeric" placeholder="in"
                   value={profile.heightIn || ""}
-                  onChange={e => setNumField("heightIn", e.target.value, 11)}
+                  onChange={e => setField("heightIn", e.target.value === "" ? "" : Math.max(0, Math.min(11, Number(e.target.value))))}
                   style={s.profileInput} />
                 <span style={s.heightUnit}>in</span>
               </div>
@@ -1142,9 +1101,9 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
             <div style={s.profileField}>
               <label style={s.profileLabel}>Weight</label>
               <div style={s.heightRow}>
-                <input type="text" inputMode="decimal" placeholder="lbs"
+                <input type="number" min="0" inputMode="numeric" placeholder="lbs"
                   value={profile.weightLbs || ""}
-                  onChange={e => setNumField("weightLbs", e.target.value)}
+                  onChange={e => setField("weightLbs", e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))}
                   style={s.profileInput} />
                 <span style={s.heightUnit}>lbs</span>
               </div>
@@ -1152,9 +1111,9 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
             <div style={s.profileField}>
               <label style={s.profileLabel}>Measured Max HR <span style={s.optionalTag}>(optional)</span></label>
               <div style={s.heightRow}>
-                <input type="text" inputMode="numeric" placeholder="bpm"
+                <input type="number" min="0" inputMode="numeric" placeholder="bpm"
                   value={profile.maxHrKnown || ""}
-                  onChange={e => setNumField("maxHrKnown", e.target.value)}
+                  onChange={e => setField("maxHrKnown", e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))}
                   style={s.profileInput} />
                 <span style={s.heightUnit}>bpm</span>
               </div>
@@ -1297,16 +1256,6 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
   );
 }
 
-// Makes a non-button clickable element keyboard-accessible (Enter / Space).
-function onKeyActivate(handler) {
-  return (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      handler();
-    }
-  };
-}
-
 function GearRow({ icon, name, detail }) {
   return (
     <div style={s.gearItem}>
@@ -1332,7 +1281,8 @@ function RoutineScreen({
   const estMin = routineMeta?.estimatedMinutes;
   const sessionType = routineMeta?.sessionType || focus;
   const isConditioning = sessionType === "Conditioning";
-  const unitWord = isConditioning ? "rounds" : "sets";
+  const isRecovery = sessionType === "Recovery";
+  const unitWord = isConditioning ? "rounds" : isRecovery ? "items" : "sets";
   const zones = isConditioning ? hrZones(estimatedMaxHr(profile)) : null;
 
   return (
@@ -1340,8 +1290,8 @@ function RoutineScreen({
       <div style={s.routineHeader}>
         <button onClick={onBack} style={s.backBtn}>← Back</button>
         <div style={{ textAlign: "center" }}>
-          <h1 style={s.routineTitle}>{isConditioning ? "Conditioning" : "Today's Routine"}</h1>
-          <span style={s.focusTag}>{isConditioning ? "VO2 Max · Endurance" : sessionType}</span>
+          <h1 style={s.routineTitle}>{isConditioning ? "Conditioning" : isRecovery ? "Recovery" : "Today's Routine"}</h1>
+          <span style={s.focusTag}>{isConditioning ? "VO2 Max · Endurance" : isRecovery ? "Active Recovery · Mobility" : sessionType}</span>
         </div>
         <button onClick={onRefresh} disabled={loading} style={s.refreshBtn}>
           {loading && swappingIndex === null ? "…" : "↺ New"}
@@ -1401,6 +1351,18 @@ function RoutineScreen({
           )}
 
           {exercises.map((ex, idx) => {
+          if (ex.kind === "recovery") {
+            return (
+              <RecoveryCard
+                key={ex.id}
+                ex={ex}
+                idx={idx}
+                done={!!completedSets[`${ex.id}-0`]}
+                toggleSetDone={toggleSetDone}
+                onRemove={onRemove}
+              />
+            );
+          }
           if (ex.kind === "conditioning") {
             return (
               <ConditioningCard
@@ -1422,11 +1384,7 @@ function RoutineScreen({
 
           return (
             <div key={ex.id} style={{ ...s.card, opacity: isSwapping ? 0.5 : 1 }}>
-              <div style={s.cardHeader} role="button" tabIndex={0}
-                aria-expanded={isExpanded}
-                aria-label={`${ex.name}, ${isExpanded ? "collapse" : "expand"} details`}
-                onClick={() => setExpandedId(isExpanded ? null : ex.id)}
-                onKeyDown={onKeyActivate(() => setExpandedId(isExpanded ? null : ex.id))}>
+              <div style={s.cardHeader} onClick={() => setExpandedId(isExpanded ? null : ex.id)}>
                 <div style={s.cardLeft}>
                   <span style={s.cardNum}>{String(idx + 1).padStart(2, "0")}</span>
                   <div>
@@ -1496,18 +1454,16 @@ function RoutineScreen({
                       return (
                         <div key={i} style={{ ...s.setRow, background: done ? "#0d2b1a" : "transparent" }}>
                           <span style={s.setNum}>{i + 1}</span>
-                          <input type="text" inputMode="decimal"
+                          <input type="number" min="0"
                             placeholder={ex.prescribedWeight != null ? String(ex.prescribedWeight) : "lbs"}
                             value={entry.weight}
-                            onChange={e => updateLog(ex.id, i, ex.sets, "weight", e.target.value)}
+                            onChange={e => updateLog(ex.id, i, "weight", e.target.value)}
                             style={s.setInput} />
-                          <input type="text" inputMode="numeric" placeholder={ex.reps}
+                          <input type="number" min="0" placeholder={ex.reps}
                             value={entry.reps}
-                            onChange={e => updateLog(ex.id, i, ex.sets, "reps", e.target.value)}
+                            onChange={e => updateLog(ex.id, i, "reps", e.target.value)}
                             style={s.setInput} />
                           <button onClick={() => toggleSetDone(ex.id, i)}
-                            aria-label={`Set ${i + 1} ${done ? "done, tap to undo" : "not done, tap to mark done"}`}
-                            aria-pressed={done}
                             style={{ ...s.doneBtn, background: done ? "#22c55e" : "#1a1a1a", border: done ? "none" : "1px solid #333" }}>
                             {done ? "✓" : "○"}
                           </button>
@@ -1665,6 +1621,33 @@ function ConditioningCard({ ex, idx, completedSets, toggleSetDone, notes, update
   );
 }
 
+// ── Recovery block card (mobility / foam roll / stretch) ─────────────────────
+function RecoveryCard({ ex, idx, done, toggleSetDone, onRemove }) {
+  return (
+    <div style={{ ...s.card, borderColor: "#2d4a3a" }}>
+      <div style={{ ...s.cardHeader, cursor: "default" }}>
+        <div style={s.cardLeft}>
+          <span style={{ ...s.cardNum, color: "#6ee7b7" }}>{String(idx + 1).padStart(2, "0")}</span>
+          <div>
+            <div style={s.cardName}>{ex.name}</div>
+            <div style={s.cardMeta}>{ex.duration || "Recovery"}</div>
+          </div>
+        </div>
+      </div>
+      <div style={s.cardBody}>
+        {ex.description && <p style={s.cardDesc}>{ex.description}</p>}
+        <div style={s.recoveryActions}>
+          <button onClick={() => toggleSetDone(ex.id, 0)}
+            style={{ ...s.recoveryDoneBtn, ...(done ? s.recoveryDoneBtnActive : {}) }}>
+            {done ? "✓ Done" : "Mark done"}
+          </button>
+          <button onClick={() => onRemove(ex.id)} style={s.removeBtn}>✕ Remove</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── History Screen ────────────────────────────────────────────────────────────
 function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
   const [expandedId, setExpandedId] = useState(null);
@@ -1696,11 +1679,7 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
           const dow = rec.dayOfWeek || dayOfWeekFromIso(rec.date);
           return (
             <div key={rec.id} style={s.card}>
-              <div style={s.cardHeader} role="button" tabIndex={0}
-                aria-expanded={isExpanded}
-                aria-label={`${rec.focus} workout, ${isExpanded ? "collapse" : "expand"} details`}
-                onClick={() => setExpandedId(isExpanded ? null : rec.id)}
-                onKeyDown={onKeyActivate(() => setExpandedId(isExpanded ? null : rec.id))}>
+              <div style={s.cardHeader} onClick={() => setExpandedId(isExpanded ? null : rec.id)}>
                 <div style={s.cardLeft}>
                   <div>
                     <div style={s.cardName}>
@@ -1727,7 +1706,11 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
                   {rec.exercises.map((ex, i) => (
                     <div key={i} style={s.recExercise}>
                       <div style={s.recExName}>{ex.name}</div>
-                      {ex.kind === "conditioning" ? (
+                      {ex.kind === "recovery" ? (
+                        <div style={s.recExMeta}>
+                          {ex.done ? "✓ " : ""}{ex.duration || "Recovery"}
+                        </div>
+                      ) : ex.kind === "conditioning" ? (
                         <>
                           <div style={s.recExMeta}>
                             {ex.format ? `${ex.format} · ` : ""}{ex.roundsDone ?? 0}/{ex.rounds || 1} rounds
@@ -1790,10 +1773,7 @@ function HistoryScreen({ history, onBack, onRepeat, onDelete }) {
 
 // ── Progress Screen — the progression ledger made visible ─────────────────────
 function ProgressScreen({ ledger, onBack }) {
-  const entries = useMemo(
-    () => Object.values(ledger || {}).sort((a, b) => (b.sessions || 0) - (a.sessions || 0)),
-    [ledger]
-  );
+  const entries = Object.values(ledger || {}).sort((a, b) => (b.sessions || 0) - (a.sessions || 0));
 
   const trendIcon = (action) => {
     if (action === "increase") return { sym: "↑", color: "#22c55e" };
@@ -1827,12 +1807,12 @@ function ProgressScreen({ ledger, onBack }) {
           </p>
         </div>
       ) : (
-        entries.map((e) => {
+        entries.map((e, i) => {
           const ladder = ladderFor(e.equipment);
           const weight = ladder ? snapWeight(ladder, e.currentWeight) : null;
           const t = trendIcon(e.lastAction);
           return (
-            <div key={e.name} style={s.ledgerCard}>
+            <div key={i} style={s.ledgerCard}>
               <div style={s.ledgerTop}>
                 <div style={s.ledgerName}>{e.name}</div>
                 <div style={{ ...s.ledgerTrend, color: t.color }}>{t.sym}</div>
@@ -2095,6 +2075,14 @@ const s = {
     width: "100%", background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8,
     color: "#f0f0f0", fontSize: 13, padding: "10px 12px", outline: "none", marginBottom: 14,
   },
+
+  // Recovery card
+  recoveryActions: { display: "flex", gap: 8, marginTop: 4 },
+  recoveryDoneBtn: {
+    flex: 1, padding: "10px", background: "#142019", color: "#6ee7b7",
+    border: "1px solid #2d4a3a", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
+  },
+  recoveryDoneBtnActive: { background: "#0d2b1a", border: "1px solid #22c55e", color: "#4ade80" },
 
   // Profile
   genderRow: { display: "flex", gap: 8 },
