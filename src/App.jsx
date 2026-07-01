@@ -1035,6 +1035,7 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
   const [showManual, setShowManual] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showEquipment, setShowEquipment] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const isConditioning = decision.type === "Conditioning";
 
   const setField = (field, value) => setProfile({ ...profile, [field]: value });
@@ -1043,16 +1044,35 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
   return (
     <div style={s.container}>
       <div style={s.headerRow}>
-        <div style={{ flex: 1 }} />
+        <div style={{ flex: 1, position: "relative" }}>
+          <button onClick={() => setShowMenu(!showMenu)} style={s.menuBtn} title="Menu">
+            ☰
+          </button>
+          {showMenu && (
+            <div style={s.menuDropdown}>
+              <button
+                onClick={() => { setShowMenu(false); onViewProgress(); }}
+                style={s.menuItem}
+              >
+                📈 Progression Tracker
+                {ledgerCount > 0 && <span style={s.menuItemCount}>{ledgerCount}</span>}
+              </button>
+              <div style={s.menuDivider} />
+              <button
+                onClick={() => { setShowMenu(false); onViewHistory(); }}
+                style={s.menuItem}
+              >
+                🗂️ Past Workouts
+                {historyCount > 0 && <span style={s.menuItemCount}>{historyCount}</span>}
+              </button>
+            </div>
+          )}
+        </div>
         <div style={s.header}>
           <h1 style={s.title}>YourWorkout</h1>
           <p style={s.subtitle}>Daily Routines Built Around Your Gear</p>
         </div>
-        <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
-          <button onClick={onViewHistory} style={s.historyIconBtn} title="Workout history">
-            🗂️{historyCount > 0 && <span style={s.historyCount}>{historyCount}</span>}
-          </button>
-        </div>
+        <div style={{ flex: 1 }} />
       </div>
 
       <section style={s.section}>
@@ -1217,18 +1237,6 @@ function SetupScreen({ decision, onGenerate, loading, error, hasExistingRoutine,
             ))}
           </div>
         </div>
-      )}
-
-      {ledgerCount > 0 && (
-        <button onClick={onViewProgress} style={s.ghostBtn}>
-          📈 Progression Tracker ({ledgerCount} {ledgerCount === 1 ? "lift" : "lifts"})
-        </button>
-      )}
-
-      {historyCount > 0 && (
-        <button onClick={onViewHistory} style={s.ghostBtn}>
-          View Past Workouts ({historyCount})
-        </button>
       )}
 
       <div style={s.resetZone}>
@@ -1848,15 +1856,27 @@ const s = {
   },
   header: { textAlign: "center", marginBottom: 40 },
   headerRow: { display: "flex", alignItems: "flex-start", marginBottom: 40 },
-  historyIconBtn: {
-    position: "relative", background: "#1a1a1a", border: "1px solid #2a2a2a",
-    borderRadius: 10, fontSize: 18, padding: "8px 12px", cursor: "pointer",
+  menuBtn: {
+    background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#ccc",
+    borderRadius: 10, fontSize: 18, padding: "8px 13px", cursor: "pointer",
   },
-  historyCount: {
-    position: "absolute", top: -6, right: -6, background: "#a3e635", color: "#0a0a0a",
-    fontSize: 10, fontWeight: 800, borderRadius: 10, minWidth: 18, height: 18,
-    display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 4px",
+  menuDropdown: {
+    position: "absolute", top: 46, left: 0, zIndex: 20, minWidth: 230,
+    background: "#141414", border: "1px solid #2a2a2a", borderRadius: 12,
+    boxShadow: "0 8px 24px rgba(0,0,0,0.5)", overflow: "hidden",
   },
+  menuItem: {
+    display: "flex", alignItems: "center", gap: 8, width: "100%",
+    background: "transparent", border: "none", color: "#ddd",
+    fontSize: 14, fontWeight: 600, padding: "14px 16px",
+    cursor: "pointer", textAlign: "left",
+  },
+  menuItemCount: {
+    marginLeft: "auto", background: "#182800", border: "1px solid #2d4a0a",
+    color: "#a3e635", fontSize: 11, fontWeight: 800, borderRadius: 8,
+    padding: "2px 8px",
+  },
+  menuDivider: { height: 1, background: "#222" },
   title: {
     fontSize: 38,
     fontWeight: 800,
